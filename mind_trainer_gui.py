@@ -19,6 +19,8 @@ import os
 import json
 import math
 
+from pprint import pformat
+
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt, QTimer, Slot, Signal
 
@@ -39,7 +41,8 @@ try:
         glClearColor, glClear, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT,
         glEnable, GL_DEPTH_TEST, GL_POINT_SMOOTH, glViewport,
         glMatrixMode, GL_PROJECTION, GL_MODELVIEW, glLoadIdentity,
-        glPointSize, glBegin, glEnd, glVertex3f, glLineWidth, GL_LINES, GL_POINTS
+        glPointSize, glBegin, glEnd, glVertex3f, glLineWidth, GL_LINES, GL_POINTS,
+        glColor3f
     )
     from OpenGL.GLU import gluPerspective, gluLookAt
     GL_AVAILABLE = True
@@ -71,6 +74,32 @@ def _safe_float(v: Any, fallback: float = 0.0) -> float:
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def _to_text(obj: Any) -> str:
+    """
+    Безопасно превращаем любые данные в текст.
+    - dict/list/tuple/set -> JSON (fallback: pformat)
+    - bytes/bytearray -> utf-8 (replace)
+    - None -> '(no brain data)'
+    - остальное -> str()
+    """
+    if obj is None:
+        return "(no brain data)"
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode("utf-8", "replace")
+        except Exception:
+            return str(obj)
+    if isinstance(obj, (dict, list, tuple, set)):
+        try:
+            return json.dumps(obj, ensure_ascii=False, indent=2)
+        except Exception:
+            return pformat(obj, width=100, compact=False)
+    try:
+        return str(obj)
+    except Exception:
+        return "(unprintable)"
 
 
 # =============================================================================
@@ -781,6 +810,7 @@ elif GL_AVAILABLE:
             # рёбра
             for (a, b, width, col) in self._edges:
                 glLineWidth(max(1.0, width))
+                glColor3f(col[0], col[1], col[2])
                 glBegin(GL_LINES)
                 glVertex3f(a[0], a[1], a[2]); glVertex3f(b[0], b[1], b[2])
                 glEnd()
@@ -788,6 +818,7 @@ elif GL_AVAILABLE:
             # узлы
             for (pos, size, col) in self._nodes:
                 glPointSize(max(2.0, size))
+                glColor3f(col[0], col[1], col[2])
                 glBegin(GL_POINTS)
                 glVertex3f(pos[0], pos[1], pos[2])
                 glEnd()
@@ -1064,7 +1095,7 @@ class AgentBrainWidget(QtWidgets.QWidget):
             for p in pets_list:
                 p_name = getattr(p.species, "name", getattr(p.species, "species_id", "pet"))
                 hp_val = getattr(p, "hp", None); mood = self._animal_temperament_label(p)
-                frag = p_name; 
+                frag = p_name
                 if hp_val is not None: frag += f" hp={int(hp_val)}"
                 if mood: frag += f" ({mood})"
                 pet_desc.append(frag)
@@ -1095,11 +1126,13 @@ class AgentBrainWidget(QtWidgets.QWidget):
         self.lblDeathReason.setText(f"last_death_reason: {last_death_reason if last_death_reason else '–'}")
         self.lblThought.setText(f"thought: {last_thought}")
 
-        behavior_dump = ""
+        behavior_dump: Any = ""
         if brain is not None and getattr(brain, "behavior_rules", None):
             brules = brain.behavior_rules
             curiosity = getattr(brain, "curiosity_charge", 0.0)
             trauma_map = getattr(brain, "trauma_map", []) or []
+            # ВАЖНО: делаем текстом — но если в будущем behavior_dump станет dict/list,
+            # ниже setPlainText всё равно безопасно приведёт к строке.
             behavior_dump = (
                 f"avoid_hazard_radius          = {getattr(brules, 'avoid_hazard_radius', 0.0):.2f}\n"
                 f"healing_zone_seek_priority    = {getattr(brules, 'healing_zone_seek_priority', 0.0):.2f}\n"
@@ -1118,7 +1151,9 @@ class AgentBrainWidget(QtWidgets.QWidget):
                 f"pets_owned          = {len(pets_list)}\n"
             )
             if last_death_reason: behavior_dump += f"last_death_reason  = {last_death_reason}\n"
-        self.behaviorText.setPlainText(behavior_dump if behavior_dump else "(no brain data)")
+
+        # Ключевая правка: безопасное приведение к строке
+        self.behaviorText.setPlainText(_to_text(behavior_dump if behavior_dump else "(no brain data)"))
 
         self.memoryView.setHtml(self._memory_html_for_agent(ag, brain))
 

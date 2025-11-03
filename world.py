@@ -25,8 +25,8 @@ __all__ = [
 # Глобальные константы/баланс (+ версия синхронизации для движка)
 # =============================================================================
 
-ENGINE_SYNC_VERSION = 3                               # инкрементируй при изменении формата
-ENGINE3D_SCALE = getattr(config, "ENGINE3D_SCALE", 1.0)  # масштаб для 3D-пакета
+ENGINE_SYNC_VERSION = 3                                   # инкрементируй при изменении формата
+ENGINE3D_SCALE = getattr(config, "ENGINE3D_SCALE", 1.0)   # масштаб для 3D-пакета
 
 COMM_RADIUS = 15.0
 MAX_CHAT_LOG = 50
@@ -157,7 +157,7 @@ def _speed(vx: float, vy: float) -> float:
 # Совместимость: гарантируем у Agent метод serialize_public_state
 # =============================================================================
 
-from typing import cast as _cast
+from typing import cast as _cast  # noqa: F401  (может понадобиться позже)
 
 def _num(x, default=0.0):
     try:
@@ -452,7 +452,7 @@ class World:
         r2 = radius * radius
         ox, oy = owner.x, owner.y
         for ani in self.iter_animals():
-            if ani.tamed_by == owner.id and ani.is_alive():
+            if getattr(ani, "tamed_by", None) == owner.id and self._is_animal_alive(ani):
                 dx = ani.x - ox
                 dy = ani.y - oy
                 if dx * dx + dy * dy <= r2:
@@ -462,7 +462,12 @@ class World:
     def _nearest_aggressive_animal(self, me: Agent) -> Optional[Tuple[AnimalSim, float]]:
         best: Optional[Tuple[AnimalSim, float]] = None
         for ani in self.iter_animals():
-            if not ani.is_alive():
+            # безопасная проверка жизни зверя
+            try:
+                alive = bool(ani.is_alive()) if hasattr(ani, "is_alive") else (float(getattr(ani, "hp", 1.0)) > 0.0)
+            except Exception:
+                alive = True
+            if not alive:
                 continue
             # public флаг агрессии (см. animals.build_public_state/ species.aggressive)
             try:
@@ -475,6 +480,9 @@ class World:
             if best is None or d < best[1]:
                 best = (ani, d)
         return best
+
+    def _animal_can_take_damage(self, ani: AnimalSim) -> bool:
+        return hasattr(ani, "apply_damage") or hasattr(ani, "hp")
 
     def _agent_can_attack_now(self, a: Agent) -> bool:
         if not bool(AGENT_FIGHTBACK_ENABLED):
@@ -517,7 +525,7 @@ class World:
             died = (hp_after <= 0.0)
 
         # Логи
-        self.add_chat_line(f"[бой] {source_name} ударил(а) {ani.species.name} на {dmg:.1f} урона!")
+        self.add_chat_line(f"[бой] {source_name} ударил(а) {getattr(ani.species, 'name', 'beast')} на {dmg:.1f} урона!")
         self.add_event({
             "type": "agent_attack",
             "who": source_id,
@@ -526,7 +534,7 @@ class World:
             "damage": round(dmg, 1),
         })
         if died:
-            self.add_chat_line(f"[бой] {ani.species.name} повержен(а).")
+            self.add_chat_line(f"[бой] {getattr(ani.species, 'name', 'beast')} повержен(а).")
             self.add_event({
                 "type": "animal_killed",
                 "by": source_id,
@@ -615,19 +623,49 @@ class World:
     # основной тик мира
     # -----------------------------------------------------------------
 
+    def _is_animal_alive(self, ani: AnimalSim) -> bool:
+        try:
+            if hasattr(ani, "is_alive"):
+                return bool(ani.is_alive())
+            return float(getattr(ani, "hp", 1.0)) > 0.0
+        except Exception:
+            return True
+
     def tick(self):
         # Починим контейнер животных перед тиками
         self._normalize_animals_container()
 
         # 1) звери
         for ani in list(self.iter_animals()):
-            ani.tick(self)
+            try:
+                if hasattr(ani, "tick") and callable(getattr(ani, "tick")):
+                    ani.tick(self)
+                elif hasattr(ani, "step") and callable(getattr(ani, "step")):
+                    # фолбэк для реализаций с step()
+                    ani.step(self)
+                else:
+                    # мягкий no-op: если есть скорость, сдвинем в пределах мира
+                    vx = float(getattr(ani, "vx", 0.0))
+                    vy = float(getattr(ani, "vy", 0.0))
+                    if vx or vy:
+                        try:
+                            ani.x = max(0.0, min(self.width,  float(getattr(ani, "x", 0.0)) + vx))
+                            ani.y = max(0.0, min(self.height, float(getattr(ani, "y", 0.0)) + vy))
+                        except Exception:
+                            pass
+            except Exception as e:
+                # не даём упасть всему миру из-за одного зверя
+                self.add_event({
+                    "type": "animal_tick_error",
+                    "uid": getattr(ani, "uid", None),
+                    "err": str(e),
+                })
 
         # чистка умерших (после тиков зверей)
         if isinstance(self.animals, dict):
-            dead_ids = [uid for uid, a in self.animals.items() if not a.is_alive()]
-            for uid in dead_ids:
-                del self.animals[uid]
+            for uid, a in list(self.animals.items()):
+                if not self._is_animal_alive(a):
+                    del self.animals[uid]
 
         # 2) агенты: жизнь + движение + речь + мозг
         for agent in list(self.agents.values()):
@@ -658,14 +696,32 @@ class World:
 
         animals_out: List[Dict[str, Any]] = []
         for ani in self.iter_animals():
-            pub = ani.build_public_state()
-            vx = getattr(ani, "vx", 0.0)
-            vy = getattr(ani, "vy", 0.0)
+            # безопасный билд public_state
+            try:
+                pub = ani.build_public_state()
+            except Exception:
+                sp = getattr(ani, "species", None)
+                px = float(getattr(ani, "x", 0.0))
+                py = float(getattr(ani, "y", 0.0))
+                pub = {
+                    "id": getattr(ani, "uid", "ani"),
+                    "species": getattr(sp, "species_id", getattr(sp, "name", "beast")) if sp else "beast",
+                    "name": getattr(sp, "name", "beast") if sp else "beast",
+                    "temperament": getattr(sp, "temperament", None) if sp else None,
+                    "pos": {"x": px, "y": py},
+                    "hp": float(getattr(ani, "hp", 50.0)),
+                    "age_ticks": int(getattr(ani, "age_ticks", 0)),
+                    "owner_id": getattr(ani, "tamed_by", None),
+                    "last_action": getattr(ani, "last_action", None),
+                    "is_alive": (float(getattr(ani, "hp", 1.0)) > 0.0),
+                }
+            vx = float(getattr(ani, "vx", 0.0))
+            vy = float(getattr(ani, "vy", 0.0))
             pub["vel"] = {"x": vx, "y": vy}
-            pub["health"] = ani.hp
-            pub["hp"] = ani.hp
-            pub["age_ticks"] = ani.age_ticks
-            pub["tamed"] = (ani.tamed_by is not None)
+            pub["health"] = float(getattr(ani, "hp", pub.get("hp", 0.0)))
+            pub["hp"] = float(getattr(ani, "hp", pub.get("hp", 0.0)))
+            pub["age_ticks"] = int(getattr(ani, "age_ticks", pub.get("age_ticks", 0)))
+            pub["tamed"] = bool(getattr(ani, "tamed_by", None))
             animals_out.append(pub)
 
         return {
@@ -707,7 +763,7 @@ class World:
         pets_by_owner: Dict[str, List[str]] = {}
         for ani in self.iter_animals():
             if getattr(ani, "tamed_by", None):
-                pets_by_owner.setdefault(ani.tamed_by, []).append(ani.uid)
+                pets_by_owner.setdefault(ani.tamed_by, []).append(getattr(ani, "uid", ""))
 
         # агенты для 3D
         agents_out: List[Dict[str, Any]] = []
@@ -754,9 +810,27 @@ class World:
         # животные для 3D
         animals_out: List[Dict[str, Any]] = []
         for ani in self.iter_animals():
-            pub = ani.build_public_state()
-            vx = getattr(ani, "vx", 0.0)
-            vy = getattr(ani, "vy", 0.0)
+            # безопасный билд public_state
+            try:
+                pub = ani.build_public_state()
+            except Exception:
+                sp = getattr(ani, "species", None)
+                px = float(getattr(ani, "x", 0.0))
+                py = float(getattr(ani, "y", 0.0))
+                pub = {
+                    "id": getattr(ani, "uid", "ani"),
+                    "species": getattr(sp, "species_id", getattr(sp, "name", "beast")) if sp else "beast",
+                    "name": getattr(sp, "name", "beast") if sp else "beast",
+                    "temperament": getattr(sp, "temperament", None) if sp else None,
+                    "pos": {"x": px, "y": py},
+                    "hp": float(getattr(ani, "hp", 50.0)),
+                    "age_ticks": int(getattr(ani, "age_ticks", 0)),
+                    "owner_id": getattr(ani, "tamed_by", None),
+                    "last_action": getattr(ani, "last_action", None),
+                    "is_alive": (float(getattr(ani, "hp", 1.0)) > 0.0),
+                }
+            vx = float(getattr(ani, "vx", 0.0))
+            vy = float(getattr(ani, "vy", 0.0))
             yaw = _compute_yaw_deg(vx, vy, 0.0, 1.0)
             spd = _speed(vx, vy)
             pos3 = _xy_to_xz(pub["pos"]["x"], pub["pos"]["y"])
@@ -770,13 +844,13 @@ class World:
                 "vel": {"x": vx, "y": vy},
                 "speed": spd,
                 "yaw": yaw,
-                "hp": pub.get("hp"),
-                "health": pub.get("hp"),
-                "age_ticks": pub.get("age_ticks", getattr(ani, "age_ticks", 0)),
-                "tamed": bool(pub.get("owner_id")),
-                "owner_id": pub.get("owner_id"),
+                "hp": float(pub.get("hp", getattr(ani, "hp", 0.0))),
+                "health": float(pub.get("hp", getattr(ani, "hp", 0.0))),
+                "age_ticks": int(pub.get("age_ticks", getattr(ani, "age_ticks", 0))),
+                "tamed": bool(pub.get("owner_id", getattr(ani, "tamed_by", None))),
+                "owner_id": pub.get("owner_id", getattr(ani, "tamed_by", None)),
                 "last_action": pub.get("last_action"),
-                "is_alive": pub.get("is_alive", True),
+                "is_alive": bool(pub.get("is_alive", True)),
             })
 
         # объекты (hazard/safe) с pos3d уже включены в serialize_public()
