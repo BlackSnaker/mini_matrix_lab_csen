@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+requests
+PySide6
+PyOpenGL
+PyOpenGL_accelerate
+numpy
