@@ -4,6 +4,53 @@
 
 **Стек:** Python • PySide6 • PyOpenGL • NumPy • (опц.) moderngl/glfw/pyrr
 
+
+Теория CSEN (Cognitive Simulation & Evolutionary-Neural)
+
+CSEN — это архитектура когнитивного моделирования агентов. Она объединяет эволюционную нейродинамику, эмоциональные архетипы и выживательное поведение.
+
+CSEN Loop
+flowchart LR
+  P[Perceive\nNeuroContextCore] --> C[Contextualize]
+  C --> E[Appraise\nEmotionCascade]
+  E --> B[Update BeliefGraph]
+  B --> G[Goal Select & Plan]
+  G --> A[Act]
+  A --> M[Log Memory]
+  M --> R[Reflect / DreamEngine]
+  R --> S[Social Diffusion]
+  S --> P
+Модули CSEN
+
+NeuroContextCore — сбор сенсорного контекста и обстановки
+
+EmotionCascade — архетипы эмоций: желание, стыд, любопытство, сопротивление
+
+BeliefGraph — граф убеждений (связь причин/последствий, strength)
+
+Goal Hierarchy — иерархия целей, планирование
+
+PainReactor — отклик на повреждения, карта травм, обучение
+
+DreamEngine — консолидация опыта в паузе, переосмысление
+
+PhilosophyKernel — этика/ценности, фильтр целей
+
+EmbodimentLayer — связь с телом: health, energy, hunger
+
+Социальная динамика
+
+SOCIAL_PANIC_TRANSFER = 0.5 — заражение страхом
+
+SOCIAL_SAFETY_BONUS = 0.10 — бонус к уверенности рядом с союзниками
+
+Планируется: местные поля влияния (social aura)
+
+Связь с UI
+
+Snapshot выводит: mind.current_drive, survival_score, behavior_rules, beliefs, memory_tail
+
+Inspector/HUD показывают эти данные live, в синхроне с 3D-сценой
 ---
 
 ## Содержание
@@ -382,7 +429,7 @@ licensed under Creative Commons BY-NC-ND 4.0.
 ## Контакты
 
 Автор: **Oleg Leinweber**  
-@Blacksnaker
+Telegram ID (для ботов/интеграций): `2028648036`  
 Вопросы по коммерческой лицензии и грантовым коллаборациям — пишите в личные сообщения.
 
 ---
