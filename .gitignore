@@ -1,0 +1,136 @@
+# -----------------------------
+# Mini-Matrix Lab — .gitignore
+# -----------------------------
+
+# ========== Python общие ==========
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Расширения C/C++ модулей
+*.so
+*.pyd
+*.dll
+
+# Кэш/временные
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+tmp/
+temp/
+
+# pip/uv/виртуальные окружения
+.venv/
+.venv*/
+venv/
+ENV/
+env/
+__pypackages__/
+# (Оставляем .python-version в репо — у тебя закреплена версия 3.11.11)
+# .python-version  <-- НЕ игнорируем
+
+# pip артефакты
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ========== Сборка и дистрибутивы ==========
+build/
+dist/
+wheelhouse/
+*.egg-info/
+.eggs/
+*.egg
+
+# ========== Тесты и покрытие ==========
+.tox/
+.nox/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytype/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# ========== Документация/сайт ==========
+docs/_build/
+site/
+# Sphinx/ MkDocs промульты
+**/.doctrees/
+
+# ========== IDE / редакторы ==========
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm / IntelliJ
+.idea/
+*.iml
+.project
+.pydevproject
+.settings/
+
+# Другие
+.history/
+.localhistory/
+
+# ========== OS-специфичное ==========
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Linux
+.directory
+
+# ========== Jupyter / исследования ==========
+.ipynb_checkpoints/
+*.ipynb
+
+# ========== Логи и профилирование ==========
+*.log
+logs/
+prof/
+*.prof
+*.lprof
+*.profraw
+
+# ========== Графика/рендеры/экспорты (опционально) ==========
+screenshots/
+renders/
+exports/
+artifacts/
+previews/
+
+# ========== Модели/чекпоинты (если появятся) ==========
+checkpoints/
+runs/
+*.ckpt
+*.onnx
+*.pt
+*.pth
+
+# ========== Qt / PySide (опционально) ==========
+# Если ты генерируешь Python-файлы из .qrc/.ui на лету и НЕ хочешь коммитить:
+# раскомментируй строки ниже.
+*_rc.py
+# ui_*.py
+
+# ========== Проект-специфика Mini-Matrix ==========
+# Явно НЕ игнорируем папки с обученными мозгами/конфигами:
+# (они важны для воспроизводимости и демонстраций)
+!mini_matrix/brains/
+!mini_matrix/trained_brains/
