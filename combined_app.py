@@ -5,6 +5,7 @@
 
 import sys
 import math
+import random
 from typing import Dict, Any, Optional, List, Tuple
 from collections.abc import Mapping, Sequence
 
@@ -21,10 +22,14 @@ from OpenGL.GL import (
 
 # --- 3D: движок, окружение
 from engine3d import MiniMatrixEngine
-from env_lowpoly import build_lowpoly_village
+from env_cinematic import build_cinematic_environment
 
 # --- Бой
 from combat_system import CombatSystem
+
+# --- Конфиг/мир
+import config
+from world import WorldObject
 
 # --- Mind Trainer панели
 from mind_trainer_gui import MindTrainerInteractive, TrainerStatsWidget, AgentBrainWidget
@@ -125,6 +130,15 @@ QFrame {{
 """
 
 STATUSBAR_STYLE = "QStatusBar { color:#c7cbe4; background-color:#11121a; }"
+
+
+# =====================================================
+# Константы showcase-карты
+# =====================================================
+SHOWCASE_WORLD_WIDTH = 180.0
+SHOWCASE_WORLD_HEIGHT = 180.0
+SHOWCASE_SAFE_HAVENS = 8
+SHOWCASE_ENV_SEED = 2026
 
 
 # =====================================================
@@ -625,7 +639,7 @@ class World3DView(QOpenGLWidget):
         if e.key() == Qt.Key_R:
             self.center_x = self.shared.world_w * 0.5
             self.center_z = self.shared.world_h * 0.5
-            self.distance = 140.0
+            self.distance = max(140.0, max(self.shared.world_w, self.shared.world_h) * 1.25)
             self.yaw_deg = -135.0
             self.pitch_deg = 40.0
             self.update()
@@ -770,20 +784,18 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         font.setStyleStrategy(QtGui.QFont.PreferAntialias)
         self.setFont(font)
 
+        # Showcase-конфигурация мира (крупнее дефолтного).
+        self._showcase_world_w = float(SHOWCASE_WORLD_WIDTH)
+        self._showcase_world_h = float(SHOWCASE_WORLD_HEIGHT)
+        self._showcase_safe_havens = int(SHOWCASE_SAFE_HAVENS)
+        self._showcase_env_seed = int(SHOWCASE_ENV_SEED)
+        config.WORLD_WIDTH = self._showcase_world_w
+        config.WORLD_HEIGHT = self._showcase_world_h
+
         # 1) 3D движок
         self.engine = MiniMatrixEngine()
-        try:
-            village_meshes = build_lowpoly_village(
-                world_w=self.engine.world.width,
-                world_h=self.engine.world.height,
-            )
-        except TypeError:
-            village_meshes = build_lowpoly_village(self.engine.world.width, self.engine.world.height)
-        if hasattr(self.engine, "load_static_environment"):
-            try:
-                self.engine.load_static_environment(village_meshes)
-            except Exception as e:
-                print("[env] load_static_environment failed:", e)
+        self.engine.world.width = self._showcase_world_w
+        self.engine.world.height = self._showcase_world_h
 
         # 2) тренер + бой
         self.trainer = MindTrainerInteractive(
@@ -798,6 +810,10 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
                 {"id": "agent_0", "name": "A0", "persona": "scout/explorer"},
             ],
         )
+        # При смене эпохи у трейнера пересобираем карту и перепривязываем боёвку.
+        self.trainer.epoch_changed.connect(self._on_trainer_epoch_changed)
+        self._prepare_showcase_world(announce=False, rebuild_environment=True)
+
         self.combat = CombatSystem(self.trainer.world)
         self._combat_timer = QtCore.QTimer(self)
         self._combat_timer.setInterval(50)  # ~20 Гц
@@ -808,6 +824,9 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         # 3) Shared + 3D виджет + оверлеи
         self.shared = SharedState(self.engine)
         self.view3d = World3DView(self.shared)
+        self.view3d.center_x = self._showcase_world_w * 0.5
+        self.view3d.center_z = self._showcase_world_h * 0.5
+        self.view3d.distance = max(160.0, max(self._showcase_world_w, self._showcase_world_h) * 1.25)
         apply_expand_policy(self.view3d, w_stretch=True)
         self.view3d.setMinimumSize(980, 720)
         self.view3d.requestSetGoal.connect(self._on_set_goal_from_3d)
@@ -910,6 +929,213 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_place_overlays"):
                 QtCore.QTimer.singleShot(0, self._place_overlays)
         return super().eventFilter(obj, ev)
+
+    def _resize_world_if_needed(self, world, target_w: float, target_h: float) -> bool:
+        """
+        Масштабирует координаты мира к новому размеру.
+        Нужен как safety-net, если мир создан не с теми размерами.
+        """
+        old_w = float(getattr(world, "width", target_w))
+        old_h = float(getattr(world, "height", target_h))
+        if old_w <= 1e-6 or old_h <= 1e-6:
+            return False
+        if abs(old_w - target_w) < 1e-6 and abs(old_h - target_h) < 1e-6:
+            return False
+
+        sx = target_w / old_w
+        sy = target_h / old_h
+        sr = math.sqrt(max(0.01, sx * sy))
+
+        for ag in _iter_vals(getattr(world, "agents", {})):
+            for attr, mul in (("x", sx), ("goal_x", sx), ("y", sy), ("goal_y", sy)):
+                if hasattr(ag, attr):
+                    try:
+                        setattr(ag, attr, float(getattr(ag, attr, 0.0)) * mul)
+                    except Exception:
+                        pass
+
+        for ani in _iter_vals(getattr(world, "animals", {})):
+            for attr, mul in (("x", sx), ("y", sy)):
+                if hasattr(ani, attr):
+                    try:
+                        setattr(ani, attr, float(getattr(ani, attr, 0.0)) * mul)
+                    except Exception:
+                        pass
+
+        for obj in _iter_vals(getattr(world, "objects", [])):
+            for attr, mul in (("x", sx), ("y", sy), ("radius", sr)):
+                if hasattr(obj, attr):
+                    try:
+                        setattr(obj, attr, float(getattr(obj, attr, 0.0)) * mul)
+                    except Exception:
+                        pass
+
+        acts = dict(getattr(world, "activities", {}) or {})
+        for rec in acts.values():
+            if not isinstance(rec, dict):
+                continue
+            area = rec.get("area")
+            if not isinstance(area, dict):
+                continue
+            try:
+                area["x"] = float(area.get("x", 0.0)) * sx
+                area["y"] = float(area.get("y", 0.0)) * sy
+                area["radius"] = float(area.get("radius", 0.0)) * sr
+            except Exception:
+                pass
+        if hasattr(world, "set_activity_registry"):
+            try:
+                world.set_activity_registry(acts)
+            except Exception:
+                pass
+
+        world.width = float(target_w)
+        world.height = float(target_h)
+
+        try:
+            spx, spy = getattr(config, "SAFE_POINT", (old_w * 0.5, old_h * 0.5))
+            config.SAFE_POINT = (float(spx) * sx, float(spy) * sy)
+        except Exception:
+            config.SAFE_POINT = (target_w * 0.5, target_h * 0.5)
+        return True
+
+    def _add_showcase_safe_havens(self, world) -> int:
+        """
+        Добавляет дополнительные safe-зоны для отхила и восстановления.
+        """
+        if world is None:
+            return 0
+
+        existing_ids = {
+            str(getattr(obj, "obj_id", ""))
+            for obj in _iter_vals(getattr(world, "objects", []))
+        }
+        registry = dict(getattr(world, "activities", {}) or {})
+        anchors = [
+            (0.12, 0.14), (0.30, 0.11), (0.50, 0.14), (0.70, 0.12),
+            (0.86, 0.28), (0.88, 0.52), (0.80, 0.76), (0.56, 0.86),
+            (0.31, 0.82), (0.14, 0.66), (0.13, 0.42), (0.24, 0.25),
+        ]
+        rnd = random.Random(1000 + int(getattr(self.trainer, "current_epoch", 0)))
+        target_count = max(1, min(self._showcase_safe_havens, len(anchors)))
+
+        hazards = [obj for obj in _iter_vals(getattr(world, "objects", [])) if str(getattr(obj, "kind", "")) == "hazard"]
+
+        def _far_from_hazard(x: float, y: float, r: float) -> bool:
+            for hz in hazards:
+                hx = float(getattr(hz, "x", 0.0))
+                hy = float(getattr(hz, "y", 0.0))
+                hr = float(getattr(hz, "radius", 0.0))
+                dx = x - hx
+                dy = y - hy
+                if dx * dx + dy * dy < (r + hr + 5.0) * (r + hr + 5.0):
+                    return False
+            return True
+
+        added = 0
+        for i in range(target_count):
+            obj_id = f"showcase_safe_{i}"
+            if obj_id in existing_ids:
+                continue
+
+            fx, fy = anchors[i]
+            radius = rnd.uniform(7.0, 10.5)
+            px = float(world.width) * fx + rnd.uniform(-2.6, 2.6)
+            py = float(world.height) * fy + rnd.uniform(-2.6, 2.6)
+            px = max(4.0, min(float(world.width) - 4.0, px))
+            py = max(4.0, min(float(world.height) - 4.0, py))
+
+            # Сдвигаем позицию, если опасность слишком близко.
+            tries = 0
+            while tries < 8 and not _far_from_hazard(px, py, radius):
+                px = max(4.0, min(float(world.width) - 4.0, px + rnd.uniform(-8.0, 8.0)))
+                py = max(4.0, min(float(world.height) - 4.0, py + rnd.uniform(-8.0, 8.0)))
+                tries += 1
+
+            haven = WorldObject(
+                obj_id=obj_id,
+                name=f"Оазис_{i + 1}",
+                kind="safe",
+                x=px,
+                y=py,
+                radius=radius,
+                danger_level=0.0,
+                comfort_level=1.0,
+            )
+            world.add_object(haven)
+            existing_ids.add(obj_id)
+            added += 1
+
+            registry[obj_id] = {
+                "name": haven.name,
+                "activity_tags": ["heal", "rest", "eat", "calm", "sleep", "repair_self", "restock_food"],
+                "comfort_level": 1.0,
+                "danger_level": 0.0,
+                "area": {"x": px, "y": py, "radius": radius},
+            }
+
+        if hasattr(world, "set_activity_registry"):
+            try:
+                world.set_activity_registry(registry)
+            except Exception:
+                pass
+
+        # Основную точку убежища переносим ближе к центру карты.
+        if target_count > 0:
+            aid = "showcase_safe_0"
+            rec = registry.get(aid, {})
+            area = rec.get("area", {})
+            if isinstance(area, dict):
+                try:
+                    config.SAFE_POINT = (float(area.get("x", world.width * 0.5)), float(area.get("y", world.height * 0.5)))
+                except Exception:
+                    config.SAFE_POINT = (world.width * 0.5, world.height * 0.5)
+        return added
+
+    def _rebuild_environment_for_world(self, world):
+        if world is None:
+            return
+        self.engine.world.width = float(getattr(world, "width", self._showcase_world_w))
+        self.engine.world.height = float(getattr(world, "height", self._showcase_world_h))
+        try:
+            meshes = build_cinematic_environment(
+                world_w=self.engine.world.width,
+                world_h=self.engine.world.height,
+                seed=self._showcase_env_seed + int(getattr(self.trainer, "current_epoch", 0)),
+            )
+        except TypeError:
+            meshes = build_cinematic_environment(self.engine.world.width, self.engine.world.height)
+
+        if hasattr(self.engine, "load_static_environment"):
+            try:
+                self.engine.load_static_environment(meshes)
+            except Exception as e:
+                print("[env] load_static_environment failed:", e)
+
+    def _prepare_showcase_world(self, *, announce: bool, rebuild_environment: bool):
+        world = getattr(self.trainer, "world", None)
+        if world is None:
+            return
+        self._resize_world_if_needed(world, self._showcase_world_w, self._showcase_world_h)
+        added = self._add_showcase_safe_havens(world)
+        if rebuild_environment:
+            self._rebuild_environment_for_world(world)
+        if announce and hasattr(world, "add_chat_line"):
+            try:
+                world.add_chat_line(
+                    f"[world] showcase-map ready: {world.width:.0f}x{world.height:.0f}, +{added} safe havens"
+                )
+            except Exception:
+                pass
+
+    @Slot()
+    def _on_trainer_epoch_changed(self):
+        self._prepare_showcase_world(announce=True, rebuild_environment=True)
+        if hasattr(self, "combat") and self.combat is not None:
+            # У trainer новый world на эпоху — боевую систему тоже перепривязываем.
+            self.combat.world = self.trainer.world
+        if hasattr(self, "bridge"):
+            self.bridge._push_snapshot()
 
     # --- toolbar
     def _make_toolbar(self):

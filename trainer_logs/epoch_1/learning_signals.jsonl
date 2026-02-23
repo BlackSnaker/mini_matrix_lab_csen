@@ -1,0 +1,133 @@
+{"agent_id": "a1", "tick": 26, "learned": ["combat_skill +0.02 -> 0.02", "wolf_tame_skill +0.11 -> 0.11", "tame_progress_events +1"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 27, "learned": [], "strengthened_links": ["saw_hazard@(86.8,66.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 55, "learned": [], "strengthened_links": ["saw_hazard@(61.8,8.9) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 56, "learned": [], "strengthened_links": ["saw_hazard@(62.1,9.8) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 58, "learned": [], "strengthened_links": ["saw_hazard@(61.5,8.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 59, "learned": [], "strengthened_links": ["saw_hazard@(61.2,7.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 126, "learned": [], "strengthened_links": ["saw_hazard@(3.8,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 127, "learned": [], "strengthened_links": ["saw_hazard@(2.9,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 128, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 129, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 130, "learned": [], "strengthened_links": ["saw_hazard@(0.2,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a1", "tick": 134, "learned": [], "strengthened_links": ["saw_hazard@(2.7,0.0) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 179, "learned": ["partner_search_events +1"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 179, "learned": ["partner_search_events +1"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 182, "learned": ["offspring_born_events +1"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 182, "learned": ["offspring_born_events +1"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 183, "learned": [], "strengthened_links": ["near(gen_182_1) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 183, "learned": [], "strengthened_links": ["near(agent_0) -> safety++ (+0.10)"], "changed_beliefs": ["new: near(a2) -> safety++ (s=0.10)"]}
+{"agent_id": "agent_0", "tick": 184, "learned": [], "strengthened_links": ["near(gen_182_1) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 184, "learned": [], "strengthened_links": ["near(a2) -> safety++ (+0.10)", "near(agent_0) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 185, "learned": [], "strengthened_links": ["near(agent_0) -> safety++ (+0.05)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 186, "learned": [], "strengthened_links": ["near(a2) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 187, "learned": [], "strengthened_links": ["near(a2) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 188, "learned": [], "strengthened_links": ["near(a2) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 189, "learned": [], "strengthened_links": ["near(a2) -> safety++ (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 278, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: healzone@(15.8,40.4) -> safe_place (s=0.15)"]}
+{"agent_id": "gen_182_1", "tick": 279, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 280, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 281, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 282, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 283, "learned": [], "strengthened_links": ["high_hunger -> seek_food (+0.30)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 283, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 284, "learned": [], "strengthened_links": ["healzone@(15.8,40.4) -> safe_place (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 286, "learned": [], "strengthened_links": ["healzone@(15.9,52.8) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 287, "learned": [], "strengthened_links": ["healzone@(15.9,52.8) -> safe_place (+0.10)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 397, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(76.5,25.5) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 407, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(74.4,19.1) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 438, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 439, "learned": [], "strengthened_links": ["near(animal) -> retreat_to_safe_zone (+0.25)", "high_fear -> avoid_threat (+0.25)"], "changed_beliefs": ["new: saw_hazard@(84.9,16.4) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 440, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(84.4,17.2) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 441, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 442, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(73.6,28.3) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 443, "learned": [], "strengthened_links": ["saw_hazard@(73.6,28.3) -> stay_away (+0.20)", "saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 444, "learned": [], "strengthened_links": ["saw_hazard@(73.6,28.3) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 445, "learned": [], "strengthened_links": ["saw_hazard@(73.6,28.3) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 446, "learned": [], "strengthened_links": ["saw_hazard@(73.6,28.3) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 478, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(11.6,42.4) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 479, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(12.5,42.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 480, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(13.3,42.4) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 481, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(14.2,42.1) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 482, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(14.7,41.4) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 500, "learned": ["wolf_tame_skill +0.12 -> 0.12", "tame_progress_events +1"], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(28.4,34.5) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 501, "learned": ["combat_skill +0.02 -> 0.02"], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(28.9,35.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 502, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(29.5,36.0) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 503, "learned": [], "strengthened_links": ["saw_hazard@(28.9,35.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 504, "learned": [], "strengthened_links": ["saw_hazard@(28.4,34.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 505, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(27.8,33.8) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 532, "learned": [], "strengthened_links": ["high_hunger -> seek_food (+0.25)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 550, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.1,2.5) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 551, "learned": ["wolf_tame_skill +0.08 -> 0.20", "wolf_tame_successes +1 -> 1", "tame_success_events +1"], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.6,1.8) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 552, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.0,1.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 553, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 554, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 555, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 556, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "gen_182_1", "tick": 571, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.7,98.2) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 572, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,98.7) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 573, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.2,99.2) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 574, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(0.5,99.7) -> stay_away (s=0.20)", "new: saw_hazard@(2.6,98.3) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 575, "learned": [], "strengthened_links": ["saw_hazard@(0.0,100.0) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(1.8,98.8) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 576, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(0.8,99.5) -> stay_away (s=0.20)", "new: saw_hazard@(1.1,99.3) -> stay_away (s=0.20)"]}
+{"agent_id": "gen_182_1", "tick": 577, "learned": [], "strengthened_links": ["low_hp -> seek_safe_zone (+0.25)", "saw_hazard@(0.0,100.0) -> stay_away (+0.05)"], "changed_beliefs": ["new: saw_hazard@(0.3,99.8) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 645, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(76.5,25.5) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 646, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 647, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 648, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 685, "learned": [], "strengthened_links": ["saw_hazard@(76.5,25.5) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 734, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(53.2,25.1) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 750, "learned": [], "strengthened_links": ["saw_hazard@(53.2,25.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 751, "learned": [], "strengthened_links": ["saw_hazard@(53.2,25.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 752, "learned": [], "strengthened_links": ["saw_hazard@(53.2,25.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 753, "learned": [], "strengthened_links": ["saw_hazard@(53.2,25.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 787, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: healzone@(21.2,11.6) -> safe_place (s=0.15)"]}
+{"agent_id": "agent_0", "tick": 788, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 789, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 790, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 791, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 803, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.15)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 804, "learned": [], "strengthened_links": ["healzone@(21.2,11.6) -> safe_place (+0.10)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 862, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(52.6,12.7) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 863, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(51.9,13.3) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 864, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(51.3,12.6) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 865, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(50.6,12.0) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 866, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(50.0,11.4) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 867, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(49.3,10.7) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 895, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.0,1.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 896, "learned": ["combat_skill +0.02 -> 0.04"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 896, "learned": ["combat_skill +0.02 -> 0.02"], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 897, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 898, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 899, "learned": [], "strengthened_links": ["saw_hazard@(1.0,1.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 914, "learned": ["combat_skill +0.02 -> 0.06"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 914, "learned": ["combat_skill +0.02 -> 0.04"], "strengthened_links": [], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 917, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.9,1.1) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 917, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.9,1.1) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 918, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.6) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 918, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.6) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 919, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.3) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 919, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.3) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 920, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 920, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(2.0,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 921, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(3.2,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 921, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(3.2,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 922, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.1,0.1) -> stay_away (s=0.20)", "new: saw_hazard@(2.3,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 922, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.1,0.1) -> stay_away (s=0.20)", "new: saw_hazard@(2.3,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 923, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(1.4,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 923, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(1.4,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 924, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(0.5,0.0) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 924, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(0.5,0.0) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 925, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "agent_0", "tick": 925, "learned": [], "strengthened_links": ["saw_hazard@(0.0,0.0) -> stay_away (+0.20)", "saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 926, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(0.9,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 926, "learned": [], "strengthened_links": ["saw_hazard@(1.1,0.1) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(0.9,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 927, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.8,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 927, "learned": [], "strengthened_links": [], "changed_beliefs": ["new: saw_hazard@(1.8,0.1) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 928, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(2.7,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "agent_0", "tick": 928, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(2.7,0.2) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 929, "learned": [], "strengthened_links": ["saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": ["new: saw_hazard@(3.6,0.3) -> stay_away (s=0.20)"]}
+{"agent_id": "a2", "tick": 930, "learned": [], "strengthened_links": ["saw_hazard@(3.6,0.3) -> stay_away (+0.20)", "saw_hazard@(2.0,0.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 931, "learned": [], "strengthened_links": ["saw_hazard@(2.7,0.2) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 932, "learned": [], "strengthened_links": ["saw_hazard@(1.8,0.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 933, "learned": [], "strengthened_links": ["saw_hazard@(0.9,0.1) -> stay_away (+0.20)"], "changed_beliefs": []}
+{"agent_id": "a2", "tick": 936, "learned": [], "strengthened_links": ["saw_hazard@(0.9,0.1) -> stay_away (+0.20)"], "changed_beliefs": []}

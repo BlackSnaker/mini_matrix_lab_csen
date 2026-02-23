@@ -1,0 +1,648 @@
+{
+  "_schema_version": 3,
+  "_lineage": {
+    "lineage_id": "agent_1",
+    "generation": 0,
+    "deaths": 0,
+    "total_age_ticks": 25,
+    "best_survival_score": 1.0,
+    "last_death_reason": null
+  },
+  "_runtime": {
+    "alive_now": true,
+    "current_drive": "explore",
+    "fear_level": 0.0,
+    "health": 100.0,
+    "energy": 100.0,
+    "hunger": 5.000000000000003,
+    "survival_score": 1.0,
+    "age_ticks": 25,
+    "ally_anchor": null,
+    "last_death_reason": null,
+    "last_thought": "…",
+    "curiosity_charge": 0.8879346971814538,
+    "trauma_spots_known": 0,
+    "skills_version": "0",
+    "skills_steps": 0,
+    "skills_goals": 0
+  },
+  "_snapshots": [
+    {
+      "ts": "2026-02-23T11:23:08Z",
+      "alive_now": true,
+      "age_ticks": 25,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 5.000000000000003,
+      "current_drive": "explore",
+      "last_death_reason": null
+    },
+    {
+      "ts": "2026-02-23T11:23:08Z",
+      "alive_now": true,
+      "age_ticks": 25,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 5.000000000000003,
+      "current_drive": "explore",
+      "last_death_reason": null
+    },
+    {
+      "ts": "2026-02-23T10:36:41Z",
+      "alive_now": true,
+      "age_ticks": 12,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 2.400000000000001,
+      "current_drive": "explore",
+      "last_death_reason": null
+    },
+    {
+      "ts": "2026-02-23T10:36:41Z",
+      "alive_now": true,
+      "age_ticks": 12,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 2.400000000000001,
+      "current_drive": "explore",
+      "last_death_reason": null
+    },
+    {
+      "ts": "2026-02-23T10:29:40Z",
+      "alive_now": true,
+      "age_ticks": 8,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 1.6,
+      "current_drive": "explore",
+      "last_death_reason": null
+    }
+  ],
+  "brain": {
+    "agent_id": "agent_1",
+    "memory_tail": [
+      {
+        "tick": 1,
+        "etype": "step",
+        "data": {
+          "reward": 0.021994,
+          "tick": 0,
+          "pos": [
+            1.07139010613279,
+            70.23415213781982
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 2,
+        "etype": "step",
+        "data": {
+          "reward": 0.021987999999999997,
+          "tick": 1,
+          "pos": [
+            1.4830289094563511,
+            67.26616183197339
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.004,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 3,
+        "etype": "step",
+        "data": {
+          "reward": 0.021981999999999998,
+          "tick": 2,
+          "pos": [
+            1.8944204327618965,
+            64.29995445983091
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.006,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 4,
+        "etype": "step",
+        "data": {
+          "reward": 0.021976,
+          "tick": 3,
+          "pos": [
+            2.305564676049426,
+            61.335530021392394
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.008,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 5,
+        "etype": "step",
+        "data": {
+          "reward": 0.02197,
+          "tick": 4,
+          "pos": [
+            2.7164616393189402,
+            58.37288851665783
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.01,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 6,
+        "etype": "step",
+        "data": {
+          "reward": 0.021963999999999997,
+          "tick": 5,
+          "pos": [
+            3.1271113225704386,
+            55.41202994562722
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.012,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 7,
+        "etype": "step",
+        "data": {
+          "reward": 0.021958,
+          "tick": 6,
+          "pos": [
+            3.537513725803921,
+            52.452954308300555
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.014,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 8,
+        "etype": "step",
+        "data": {
+          "reward": 0.021952,
+          "tick": 7,
+          "pos": [
+            3.947668849019388,
+            49.49566160467785
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.016,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 9,
+        "etype": "step",
+        "data": {
+          "reward": 0.021946,
+          "tick": 8,
+          "pos": [
+            4.357576692216838,
+            46.540151834759094
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.018000000000000002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 10,
+        "etype": "step",
+        "data": {
+          "reward": 0.021939999999999998,
+          "tick": 9,
+          "pos": [
+            4.767237255396274,
+            43.58642499854429
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.020000000000000004,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 11,
+        "etype": "step",
+        "data": {
+          "reward": 0.021934,
+          "tick": 10,
+          "pos": [
+            5.176650538557693,
+            40.63448109603344
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.022000000000000006,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 12,
+        "etype": "step",
+        "data": {
+          "reward": 0.021928,
+          "tick": 11,
+          "pos": [
+            5.585816541701097,
+            37.68432012722654
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.024000000000000007,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 13,
+        "etype": "step",
+        "data": {
+          "reward": 0.021921999999999997,
+          "tick": 12,
+          "pos": [
+            5.994735264826485,
+            34.735942092123594
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.02600000000000001,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 14,
+        "etype": "step",
+        "data": {
+          "reward": 0.021915999999999998,
+          "tick": 13,
+          "pos": [
+            6.403406707933857,
+            31.789346990724603
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.02800000000000001,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 15,
+        "etype": "step",
+        "data": {
+          "reward": 0.02191,
+          "tick": 14,
+          "pos": [
+            6.811830871023213,
+            28.844534823029562
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.030000000000000013,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 16,
+        "etype": "step",
+        "data": {
+          "reward": 0.021904,
+          "tick": 15,
+          "pos": [
+            7.220007754094554,
+            25.901505589038475
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.032000000000000015,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 17,
+        "etype": "step",
+        "data": {
+          "reward": 0.021897999999999997,
+          "tick": 16,
+          "pos": [
+            7.627937357147879,
+            22.960259288751338
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.034000000000000016,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 18,
+        "etype": "step",
+        "data": {
+          "reward": 0.021892,
+          "tick": 17,
+          "pos": [
+            8.035619680183189,
+            20.020795922168155
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.03600000000000002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 19,
+        "etype": "step",
+        "data": {
+          "reward": 0.021886,
+          "tick": 18,
+          "pos": [
+            8.443054723200483,
+            17.083115489288925
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.03800000000000002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 20,
+        "etype": "step",
+        "data": {
+          "reward": 0.02188,
+          "tick": 19,
+          "pos": [
+            8.850242486199761,
+            14.14721799011365
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.04000000000000002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 21,
+        "etype": "step",
+        "data": {
+          "reward": 0.021873999999999998,
+          "tick": 20,
+          "pos": [
+            9.257182969181022,
+            11.213103424642325
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.04200000000000002,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 22,
+        "etype": "step",
+        "data": {
+          "reward": 0.021868,
+          "tick": 21,
+          "pos": [
+            9.663876172144269,
+            8.280771792874955
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.044000000000000025,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 23,
+        "etype": "step",
+        "data": {
+          "reward": 0.021862,
+          "tick": 22,
+          "pos": [
+            10.070322095089498,
+            5.350223094811536
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.04600000000000003,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 24,
+        "etype": "step",
+        "data": {
+          "reward": 0.011562811924761513,
+          "tick": 23,
+          "pos": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "goal": [
+            10.203672129957864,
+            4.388745198223409
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.04800000000000003,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      },
+      {
+        "tick": 25,
+        "etype": "step",
+        "data": {
+          "reward": 0.021849999999999998,
+          "tick": 24,
+          "pos": [
+            8.20138821816247,
+            6.561964960825741
+          ],
+          "goal": [
+            4.341535064509785,
+            10.751335461605215
+          ],
+          "health": 100.0,
+          "energy": 1.0,
+          "hunger": 0.05000000000000003,
+          "fear": 0.0,
+          "in_safe": false
+        }
+      }
+    ],
+    "beliefs": [
+      {
+        "condition": "saw_hazard@(14.2,17.0)",
+        "conclusion": "stay_away",
+        "strength": 0.8
+      }
+    ],
+    "behavior_rules": {
+      "avoid_hazard_radius": 6.0,
+      "healing_zone_seek_priority": 0.5,
+      "stick_with_ally_if_fear_above": 0.7,
+      "exploration_bias": 0.8652927148588403
+    },
+    "fear_level": 0.0,
+    "health": 100.0,
+    "energy": 100.0,
+    "hunger": 5.000000000000003,
+    "alive": true,
+    "age_ticks": 25,
+    "survival_score": 1.0,
+    "current_drive": "explore",
+    "ally_anchor": null,
+    "last_death_reason": null,
+    "trauma_map": [],
+    "curiosity_charge": 0.8879346971814538,
+    "last_thought": "…"
+  },
+  "last_saved": "2026-02-23T11:23:08Z"
+}
