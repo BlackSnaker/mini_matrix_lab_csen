@@ -26,6 +26,7 @@
 #   ./trained_brains/<id>.mind.json   — снимки сознаний
 #   ./brains/<id>.json                — runtime-формат (v3) через brain_io
 #   ./trainer_logs/epoch_#/monitor.jsonl — поток метрик
+#   ./trainer_logs/epoch_#/learning_signals.jsonl — явные сдвиги обучения по агентам
 #   ./trainer_snapshots/epoch_#/t_XXXX.json — снапшоты 3D-синх-пакетов
 #
 from __future__ import annotations
@@ -40,6 +41,7 @@ import config
 from world import World, Agent, WorldObject
 from mind_core import ConsciousnessBlock
 from brain_io import save_brain  # пишет brains/<id>.json (v3)
+from learning_insights import AgentLearningSnapshot, capture_learning_snapshot, diff_learning
 
 # новая система зверей
 from animals import Animal as AnimalSim, AnimalSpecies
@@ -115,6 +117,11 @@ class TrainingMonitorState:
     panic_ratio: float = 0.0   # доля агентов с fear_level > 0.7
     cling_ratio: float = 0.0   # доля агентов с drive == "stay_with_ally"
     tamed_ratio: float = 0.0   # доля агентов, у которых есть питомцы
+    learning_events: int = 0   # сколько раз за эпоху фиксировали явный сдвиг обучения
+    learned_skills: int = 0    # суммарно новых/усиленных навыков
+    strengthened_links: int = 0  # сколько раз усиливались связи (belief/rule)
+    belief_changes: int = 0      # сколько зафиксировано изменений убеждений
+    peer_shared_lessons: int = 0 # сколько раз агенты получили опыт приручения от союзников
 
     note: str = ""             # краткий комментарий про текущее состояние
 
@@ -478,6 +485,9 @@ class MindTrainer:
 
     # история метрик по всем эпохам
     monitor_history: List[Dict[str, Any]] = field(default_factory=list)
+    learning_journal: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    latest_learning: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    _learning_prev: Dict[str, AgentLearningSnapshot] = field(default_factory=dict, repr=False)
 
     # логирование
     verbose: bool = True
@@ -521,8 +531,16 @@ class MindTrainer:
         self.monitor.epoch = epoch_idx
         self.monitor.tick = 0
         self.monitor.note = f"spawned world with seed={world_seed}"
+        self.monitor.learning_events = 0
+        self.monitor.learned_skills = 0
+        self.monitor.strengthened_links = 0
+        self.monitor.belief_changes = 0
+        self.monitor.peer_shared_lessons = 0
 
         self._last_disaster_tick = None
+        self.learning_journal = {}
+        self.latest_learning = {}
+        self._learning_prev = {}
         self._log(f"world spawned (seed={world_seed})")
 
     # -------------------------------------------------
@@ -744,6 +762,64 @@ class MindTrainer:
                         break
 
     # -------------------------------------------------
+    # Аналитика обучения (навыки/связи/убеждения)
+    # -------------------------------------------------
+
+    def _collect_learning_signals(self, t: int):
+        if self._world is None:
+            return
+
+        ev_count = 0
+        learned_count = 0
+        strengthened_count = 0
+        belief_change_count = 0
+        peer_lessons_count = 0
+
+        for ag in _iter_agents_of(self._world):
+            aid = _agent_id(ag) or getattr(ag, "name", "agent")
+            curr = capture_learning_snapshot(ag, tick=t)
+            prev = self._learning_prev.get(aid)
+            self._learning_prev[aid] = curr
+            if prev is None:
+                continue
+
+            delta = diff_learning(prev, curr)
+            if not delta.has_signal():
+                continue
+
+            entry = {
+                "tick": int(t),
+                "learned": list(delta.learned),
+                "strengthened_links": list(delta.strengthened_links),
+                "changed_beliefs": list(delta.changed_beliefs),
+            }
+            journal = self.learning_journal.setdefault(aid, [])
+            journal.append(entry)
+            if len(journal) > 300:
+                del journal[:-300]
+            self.latest_learning[aid] = entry
+            self._append_learning_jsonl(aid, entry)
+
+            ev_count += 1
+            learned_count += len(delta.learned)
+            strengthened_count += len(delta.strengthened_links)
+            belief_change_count += len(delta.changed_beliefs)
+            peer_lessons_count += int(getattr(delta, "peer_tame_lessons", 0))
+
+        self.monitor.learning_events += ev_count
+        self.monitor.learned_skills += learned_count
+        self.monitor.strengthened_links += strengthened_count
+        self.monitor.belief_changes += belief_change_count
+        self.monitor.peer_shared_lessons += peer_lessons_count
+
+        if ev_count > 0:
+            self.monitor.note = (
+                f"learning +{ev_count} "
+                f"(skills +{learned_count}, links +{strengthened_count}, "
+                f"beliefs +{belief_change_count}, peer +{peer_lessons_count})"
+            )
+
+    # -------------------------------------------------
     # Подсчёт метрик мониторинга
     # -------------------------------------------------
 
@@ -846,6 +922,20 @@ class MindTrainer:
         except Exception as e:
             print("[mind_trainer] WARN: monitor jsonl append failed:", e)
 
+    def _append_learning_jsonl(self, agent_id: str, row: Dict[str, Any]):
+        """
+        Пишем «сигналы обучения» в отдельный поток логов:
+        видно, что агент выучил, где усилил связи и где поменял убеждения.
+        """
+        try:
+            d = self._epoch_logs_dir(self.monitor.epoch)
+            path = os.path.join(d, "learning_signals.jsonl")
+            payload = {"agent_id": agent_id, **row}
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print("[mind_trainer] WARN: learning jsonl append failed:", e)
+
     def _maybe_snapshot_world(self, t: int):
         if not self.snapshot_every or self.snapshot_every <= 0 or not self._world:
             return
@@ -881,6 +971,7 @@ class MindTrainer:
 
             # один шаг симуляции целиком
             self._world.tick()
+            self._collect_learning_signals(t)
 
             # лёгкий анти-AFK раз в 60 тиков
             if t % 60 == 0:
@@ -970,6 +1061,13 @@ class MindTrainer:
             return
         save_all_brains(self._world, out_dir)
         self._log(f"brains exported to '{out_dir}' + ./brains/*.json")
+
+    def get_agent_learning_report(self, agent_id: str, tail: int = 8) -> Dict[str, Any]:
+        journal = self.learning_journal.get(agent_id, [])
+        return {
+            "latest": self.latest_learning.get(agent_id),
+            "tail": list(journal[-max(1, int(tail)):]),
+        }
 
 
 # =============================================================================

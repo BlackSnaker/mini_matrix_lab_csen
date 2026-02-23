@@ -247,6 +247,8 @@ class Agent:
     attack_power: float = field(default_factory=lambda: float(getattr(config, "AGENT_BASE_ATTACK_POWER", 8.0)))
     attack_range: float = field(default_factory=lambda: float(getattr(config, "AGENT_MELEE_RANGE", 1.6)))
     attack_cooldown: int = field(default_factory=lambda: int(getattr(config, "AGENT_ATTACK_COOLDOWN", 18)))
+    # NEW: накопленный боевой навык. Чем выше, тем чаще агент решается на контратаку.
+    combat_skill: float = 0.0     # 0..5, растёт в бою и снижает склонность к панике
     last_attacker_id: Optional[str] = None
     took_damage_tick: int = -10**9
     _last_attack_tick: int = -10**9
@@ -367,14 +369,25 @@ class Agent:
         try:
             if not self._in_safe_zone(world) and getattr(attacker, "x", None) is not None:
                 ax, ay = float(getattr(attacker, "x", 0.0)), float(getattr(attacker, "y", 0.0))
-                vx, vy = self.x - ax, self.y - ay
-                n = math.hypot(vx, vy) or 1.0
-                vx, vy = vx / n, vy / n
-                retreat = 6.0 + 6.0 * random.random()
-                gx = self.x + vx * retreat
-                gy = self.y + vy * retreat
                 bounds = _world_size(world)
-                self.set_goal(gx, gy, world_size=bounds)
+                if self._should_counterattack_after_hit():
+                    # Осмысленная контратака: держим врага в зоне мили, а не уходим автоматически.
+                    # NEW: вместо «всегда отступать» опытный/уверенный агент может пойти в бой.
+                    self.set_goal(ax, ay, world_size=bounds)
+                    self._push_belief(
+                        cond="animal_attacks_often",
+                        concl="counterattack_if_ready",
+                        strength=0.6,
+                        now=now,
+                    )
+                else:
+                    vx, vy = self.x - ax, self.y - ay
+                    n = math.hypot(vx, vy) or 1.0
+                    vx, vy = vx / n, vy / n
+                    retreat = 6.0 + 6.0 * random.random()
+                    gx = self.x + vx * retreat
+                    gy = self.y + vy * retreat
+                    self.set_goal(gx, gy, world_size=bounds)
         except Exception:
             pass
 
@@ -394,6 +407,30 @@ class Agent:
                 })
         except Exception:
             pass
+
+        try:
+            if self.brain and hasattr(self.brain, "note_combat_feedback"):
+                # Отрицательная обратная связь за полученный урон.
+                # NEW: передаём в мозг сигнал, что текущий обмен в бою был невыгодным.
+                self.brain.note_combat_feedback(
+                    hp_delta=-float(max(0.0, damage)),
+                    dist_delta=0.0,
+                    done=not self.is_alive(),
+                )
+        except Exception:
+            pass
+
+    def _should_counterattack_after_hit(self) -> bool:
+        """
+        Решение «держаться и драться» вместо автоматического бегства.
+        Чем выше combat_skill и здоровье — тем выше шанс контратаки.
+        """
+        # NEW: простая эвристика уверенности (здоровье + навык + низкий страх).
+        hp_ratio = _clamp01(float(self.health) / 100.0)
+        fear = _clamp01(float(self.fear))
+        skill = max(0.0, min(5.0, float(self.combat_skill)))
+        confidence = (0.55 * hp_ratio) + (0.35 * (skill / 5.0)) + (0.25 * (1.0 - fear))
+        return bool(confidence >= 0.62)
 
     # ----------- LIFE -----------
     def is_alive(self) -> bool:

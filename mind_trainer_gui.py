@@ -54,6 +54,7 @@ from world import World, Agent, WorldObject
 from mind_core import ConsciousnessBlock
 from brain_io import save_brain
 from animals import Animal as AnimalSim, AnimalSpecies
+from learning_insights import AgentLearningSnapshot, capture_learning_snapshot, diff_learning
 
 
 # =============================================================================
@@ -102,6 +103,144 @@ def _to_text(obj: Any) -> str:
         return "(unprintable)"
 
 
+UI_I18N: Dict[str, Dict[str, str]] = {
+    "ru": {
+        "window_title": "Mind Trainer Lab — эволюция сознаний и зверей",
+        "ready": "Готово",
+        "language": "Язык",
+        "combo_ru": "Русский",
+        "combo_en": "English",
+        "agent": "Агент",
+        "drive": "Режим",
+        "ally_anchor": "Ориентир союзника",
+        "generation": "Поколение",
+        "parents": "Родители",
+        "lineage_role": "Генетическая роль",
+        "last_death_reason": "Причина последней смерти",
+        "thought": "Мысль",
+        "pets": "Питомцы",
+        "brain_weights": "Мозг / Поведенческие веса:",
+        "memory_events": "Последние события памяти:",
+        "no_data": "(нет данных)",
+        "memory_empty": "(память пуста)",
+        "hp": "Здоровье",
+        "fear": "Страх",
+        "survival": "Выживание",
+        "energy": "Энергия",
+        "hunger": "Голод",
+        "start": "Старт",
+        "pause": "Пауза",
+        "next_epoch": "Следующая эпоха",
+        "save_brains": "Сохранить мозги",
+        "brains_saved": "примечание: мозги сохранены → ./trained_brains",
+        "epoch_tick": "Эпоха: {epoch} | Тик: {tick}",
+        "avg_fear": "ср_страх",
+        "avg_hp": "ср_hp",
+        "avg_energy": "ср_энергия",
+        "avg_hunger": "ср_голод",
+        "avg_curiosity": "ср_любопытство",
+        "avg_survival": "ср_выживание",
+        "avg_age": "ср_возраст",
+        "avg_trauma_spots": "ср_травма_точек",
+        "alive_ratio": "доля_живых",
+        "panic_ratio": "доля_паники",
+        "cling_ratio": "доля_держится_вместе",
+        "avg_pets": "ср_питомцев",
+        "tame_ratio": "доля_приручения",
+        "learning_events": "сигналы_обучения",
+        "learned_skills": "выучено_навыков",
+        "strengthened_links": "укреплено_связей",
+        "belief_changes": "изменено_убеждений",
+        "peer_shared_lessons": "получено_peer_уроков",
+        "learning_signals": "Сигналы обучения (что изменилось):",
+        "learning_none": "пока нет явных сдвигов обучения",
+        "lineage_panel": "Родословная и семейные события:",
+        "lineage_none": "нет семейных событий",
+        "lineage_recent": "Недавние события:",
+        "lineage_children": "Дети",
+        "lineage_siblings": "Сиблинги",
+        "role_balanced": "сбалансированный",
+        "role_scout": "разведчик",
+        "role_protector": "защитник",
+        "role_tamer": "приручатель",
+        "role_medic": "медик",
+        "learned_header": "НАУЧИЛСЯ",
+        "strengthened_header": "УКРЕПИЛ СВЯЗИ",
+        "changed_header": "ИЗМЕНИЛ УБЕЖДЕНИЯ",
+        "note": "примечание",
+    },
+    "en": {
+        "window_title": "Mind Trainer Lab — evolution of minds and beasts",
+        "ready": "Ready",
+        "language": "Language",
+        "combo_ru": "Russian",
+        "combo_en": "English",
+        "agent": "Agent",
+        "drive": "Drive",
+        "ally_anchor": "Ally anchor",
+        "generation": "Generation",
+        "parents": "Parents",
+        "lineage_role": "Lineage role",
+        "last_death_reason": "Last death reason",
+        "thought": "Thought",
+        "pets": "Pets",
+        "brain_weights": "Brain / Behavior weights:",
+        "memory_events": "Recent memory events:",
+        "no_data": "(no data)",
+        "memory_empty": "(memory empty)",
+        "hp": "HP",
+        "fear": "Fear",
+        "survival": "Survival",
+        "energy": "Energy",
+        "hunger": "Hunger",
+        "start": "Start",
+        "pause": "Pause",
+        "next_epoch": "Next Epoch",
+        "save_brains": "Save Brains",
+        "brains_saved": "note: brains saved → ./trained_brains",
+        "epoch_tick": "Epoch: {epoch} | Tick: {tick}",
+        "avg_fear": "avg_fear",
+        "avg_hp": "avg_hp",
+        "avg_energy": "avg_energy",
+        "avg_hunger": "avg_hunger",
+        "avg_curiosity": "avg_curiosity",
+        "avg_survival": "avg_survival",
+        "avg_age": "avg_age",
+        "avg_trauma_spots": "avg_trauma_spots",
+        "alive_ratio": "alive_ratio",
+        "panic_ratio": "panic_ratio",
+        "cling_ratio": "cling_ratio",
+        "avg_pets": "avg_pets",
+        "tame_ratio": "tame_ratio",
+        "learning_events": "learning_events",
+        "learned_skills": "learned_skills",
+        "strengthened_links": "strengthened_links",
+        "belief_changes": "belief_changes",
+        "peer_shared_lessons": "peer_shared_lessons",
+        "learning_signals": "Learning signals (what changed):",
+        "learning_none": "no explicit learning shifts yet",
+        "lineage_panel": "Lineage and family events:",
+        "lineage_none": "no family events",
+        "lineage_recent": "Recent events:",
+        "lineage_children": "Children",
+        "lineage_siblings": "Siblings",
+        "role_balanced": "balanced",
+        "role_scout": "scout",
+        "role_protector": "protector",
+        "role_tamer": "tamer",
+        "role_medic": "medic",
+        "learned_header": "LEARNED",
+        "strengthened_header": "STRENGTHENED LINKS",
+        "changed_header": "CHANGED BELIEFS",
+        "note": "note",
+    },
+}
+
+
+def _tr(lang: str, key: str) -> str:
+    return UI_I18N.get(lang, UI_I18N["en"]).get(key, key)
+
+
 # =============================================================================
 # Мониторинг популяции
 # =============================================================================
@@ -126,6 +265,11 @@ class TrainingMonitorState:
 
     avg_pets: float = 0.0
     tame_ratio: float = 0.0
+    learning_events: int = 0
+    learned_skills: int = 0
+    strengthened_links: int = 0
+    belief_changes: int = 0
+    peer_shared_lessons: int = 0
 
     note: str = ""
 
@@ -324,6 +468,9 @@ class MindTrainerInteractive(QtCore.QObject):
 
         self.monitor = TrainingMonitorState()
         self.world: Optional[World] = None
+        self.learning_journal: Dict[str, List[Dict[str, Any]]] = {}
+        self.latest_learning: Dict[str, Dict[str, Any]] = {}
+        self._learning_prev: Dict[str, AgentLearningSnapshot] = {}
 
         self._spawn_new_epoch()
 
@@ -346,6 +493,14 @@ class MindTrainerInteractive(QtCore.QObject):
         self.monitor.epoch = self.current_epoch
         self.monitor.tick = 0
         self.monitor.note = f"epoch {self.current_epoch} started (seed={world_seed})"
+        self.monitor.learning_events = 0
+        self.monitor.learned_skills = 0
+        self.monitor.strengthened_links = 0
+        self.monitor.belief_changes = 0
+        self.monitor.peer_shared_lessons = 0
+        self.learning_journal = {}
+        self.latest_learning = {}
+        self._learning_prev = {}
 
         self.agent_list_changed.emit()
         self.epoch_changed.emit()
@@ -427,6 +582,70 @@ class MindTrainerInteractive(QtCore.QObject):
         if t - self._last_disaster_tick == self.relief_after_disaster:
             self._inject_relief(t)
 
+    def _collect_learning_signals(self, t: int):
+        if not self.world:
+            return
+
+        ev_count = 0
+        learned_count = 0
+        strengthened_count = 0
+        belief_change_count = 0
+        peer_lessons_count = 0
+
+        agents_obj = getattr(self.world, "agents", {}) or {}
+        agents = list(agents_obj.values()) if isinstance(agents_obj, dict) else list(agents_obj)
+        for ag in agents:
+            aid = getattr(ag, "id", None) or getattr(ag, "agent_id", None) or getattr(ag, "name", "agent")
+            aid = str(aid)
+
+            curr = capture_learning_snapshot(ag, tick=t)
+            prev = self._learning_prev.get(aid)
+            self._learning_prev[aid] = curr
+            if prev is None:
+                continue
+
+            delta = diff_learning(prev, curr)
+            if not delta.has_signal():
+                continue
+
+            entry = {
+                "tick": int(t),
+                "learned": list(delta.learned),
+                "strengthened_links": list(delta.strengthened_links),
+                "changed_beliefs": list(delta.changed_beliefs),
+            }
+            journal = self.learning_journal.setdefault(aid, [])
+            journal.append(entry)
+            if len(journal) > 300:
+                del journal[:-300]
+            self.latest_learning[aid] = entry
+
+            ev_count += 1
+            learned_count += len(delta.learned)
+            strengthened_count += len(delta.strengthened_links)
+            belief_change_count += len(delta.changed_beliefs)
+            peer_lessons_count += int(getattr(delta, "peer_tame_lessons", 0))
+
+        self.monitor.learning_events += ev_count
+        self.monitor.learned_skills += learned_count
+        self.monitor.strengthened_links += strengthened_count
+        self.monitor.belief_changes += belief_change_count
+        self.monitor.peer_shared_lessons += peer_lessons_count
+
+        if ev_count > 0:
+            self.monitor.note = (
+                f"learning +{ev_count} "
+                f"(skills +{learned_count}, links +{strengthened_count}, "
+                f"beliefs +{belief_change_count}, peer +{peer_lessons_count})"
+            )
+
+    def get_agent_learning_report(self, agent_id: str, tail: int = 8) -> Dict[str, Any]:
+        hist = self.learning_journal.get(agent_id, [])
+        return {
+            "latest": self.latest_learning.get(agent_id),
+            "tail": list(hist[-max(1, int(tail)):]),
+        }
+
     def _collect_monitor_stats(self):
         if not self.world:
             return
@@ -493,6 +712,7 @@ class MindTrainerInteractive(QtCore.QObject):
         self._maybe_inject_disaster(t)
         self._maybe_inject_relief(t)
         self.world.tick()
+        self._collect_learning_signals(t)
         self.ticks_in_epoch += 1
         self.monitor.tick = self.ticks_in_epoch
         self._collect_monitor_stats()
@@ -906,6 +1126,7 @@ class AgentBrainWidget(QtWidgets.QWidget):
     def __init__(self, trainer: MindTrainerInteractive, parent=None):
         super().__init__(parent)
         self.trainer = trainer
+        self.lang = "ru"
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8); outer.setSpacing(8)
@@ -925,6 +1146,9 @@ class AgentBrainWidget(QtWidgets.QWidget):
         self.lblName = QtWidgets.QLabel("Agent: —")
         self.lblDrive = QtWidgets.QLabel("drive: –")
         self.lblAlly = QtWidgets.QLabel("ally_anchor: –")
+        self.lblGeneration = QtWidgets.QLabel("generation: –")
+        self.lblParents = QtWidgets.QLabel("parents: –")
+        self.lblLineageRole = QtWidgets.QLabel("lineage_role: –")
         self.lblDeathReason = QtWidgets.QLabel("last_death_reason: –")
         self.lblThought = QtWidgets.QLabel("thought: –"); self.lblThought.setWordWrap(True)
         self.lblPets = QtWidgets.QLabel("pets: –"); self.lblPets.setWordWrap(True)
@@ -932,9 +1156,12 @@ class AgentBrainWidget(QtWidgets.QWidget):
         statsLay.addWidget(self.lblName, 0, 0, 1, 2)
         statsLay.addWidget(self.lblDrive, 1, 0, 1, 2)
         statsLay.addWidget(self.lblAlly,  2, 0, 1, 2)
-        statsLay.addWidget(self.lblDeathReason, 3, 0, 1, 2)
-        statsLay.addWidget(self.lblThought, 4, 0, 1, 2)
-        statsLay.addWidget(self.lblPets,   5, 0, 1, 2)
+        statsLay.addWidget(self.lblGeneration, 3, 0, 1, 2)
+        statsLay.addWidget(self.lblParents, 4, 0, 1, 2)
+        statsLay.addWidget(self.lblLineageRole, 5, 0, 1, 2)
+        statsLay.addWidget(self.lblDeathReason, 6, 0, 1, 2)
+        statsLay.addWidget(self.lblThought, 7, 0, 1, 2)
+        statsLay.addWidget(self.lblPets,   8, 0, 1, 2)
 
         bar_css_base = """
             QProgressBar {
@@ -953,15 +1180,16 @@ class AgentBrainWidget(QtWidgets.QWidget):
         self.hungerBar = QtWidgets.QProgressBar(); self.hungerBar.setRange(0, 100); self.hungerBar.setFormat("Hunger: %v")
         self.hungerBar.setStyleSheet(bar_css_base + "QProgressBar::chunk{background-color:#FF4B4B;}")
 
-        statsLay.addWidget(self.hpBar, 6, 0, 1, 2)
-        statsLay.addWidget(self.fearBar, 7, 0, 1, 2)
-        statsLay.addWidget(self.survivalBar, 8, 0, 1, 2)
-        statsLay.addWidget(self.energyBar, 9, 0, 1, 2)
-        statsLay.addWidget(self.hungerBar, 10, 0, 1, 2)
+        statsLay.addWidget(self.hpBar, 9, 0, 1, 2)
+        statsLay.addWidget(self.fearBar, 10, 0, 1, 2)
+        statsLay.addWidget(self.survivalBar, 11, 0, 1, 2)
+        statsLay.addWidget(self.energyBar, 12, 0, 1, 2)
+        statsLay.addWidget(self.hungerBar, 13, 0, 1, 2)
 
         outer.addWidget(statsFrame)
 
-        outer.addWidget(QtWidgets.QLabel("Мозг / Поведенческие веса:"), 0, Qt.AlignLeft)
+        self.lblBehaviorTitle = QtWidgets.QLabel("Мозг / Поведенческие веса:")
+        outer.addWidget(self.lblBehaviorTitle, 0, Qt.AlignLeft)
         self.behaviorText = QtWidgets.QTextEdit(); self.behaviorText.setReadOnly(True)
         self.behaviorText.setStyleSheet("""
             QTextEdit { background-color:#0f0f16; border:1px solid #444;
@@ -969,13 +1197,32 @@ class AgentBrainWidget(QtWidgets.QWidget):
         """)
         outer.addWidget(self.behaviorText, 1)
 
-        outer.addWidget(QtWidgets.QLabel("Последние события памяти:"), 0, Qt.AlignLeft)
+        self.lblMemoryTitle = QtWidgets.QLabel("Последние события памяти:")
+        outer.addWidget(self.lblMemoryTitle, 0, Qt.AlignLeft)
         self.memoryView = QtWidgets.QTextEdit(); self.memoryView.setReadOnly(True)
         self.memoryView.setStyleSheet("""
             QTextEdit { background-color:#0f0f16; border:1px solid #444;
                         color:#8fda8f; font-family:monospace; font-size:11px; border-radius:6px; }
         """)
         outer.addWidget(self.memoryView, 1)
+
+        self.lblLearningTitle = QtWidgets.QLabel("Сигналы обучения (что изменилось):")
+        outer.addWidget(self.lblLearningTitle, 0, Qt.AlignLeft)
+        self.learningView = QtWidgets.QTextEdit(); self.learningView.setReadOnly(True)
+        self.learningView.setStyleSheet("""
+            QTextEdit { background-color:#0f0f16; border:1px solid #444;
+                        color:#f5e8a3; font-family:monospace; font-size:11px; border-radius:6px; }
+        """)
+        outer.addWidget(self.learningView, 1)
+
+        self.lblLineageTitle = QtWidgets.QLabel("Родословная и семейные события:")
+        outer.addWidget(self.lblLineageTitle, 0, Qt.AlignLeft)
+        self.lineageView = QtWidgets.QTextEdit(); self.lineageView.setReadOnly(True)
+        self.lineageView.setStyleSheet("""
+            QTextEdit { background-color:#0f0f16; border:1px solid #444;
+                        color:#a8f0d4; font-family:monospace; font-size:11px; border-radius:6px; }
+        """)
+        outer.addWidget(self.lineageView, 1)
 
         tabs = QtWidgets.QTabWidget()
         tabs.setStyleSheet("""
@@ -997,7 +1244,21 @@ class AgentBrainWidget(QtWidgets.QWidget):
         self.trainer.world_changed.connect(self.refresh_all)
         self.trainer.epoch_changed.connect(self.rebuild_agent_list)
 
+        self.set_language(self.lang)
         self.rebuild_agent_list()
+        self.refresh_all()
+
+    def set_language(self, lang: str):
+        self.lang = "ru" if lang == "ru" else "en"
+        self.lblBehaviorTitle.setText(_tr(self.lang, "brain_weights"))
+        self.lblMemoryTitle.setText(_tr(self.lang, "memory_events"))
+        self.lblLearningTitle.setText(_tr(self.lang, "learning_signals"))
+        self.lblLineageTitle.setText(_tr(self.lang, "lineage_panel"))
+        self.hpBar.setFormat(f"{_tr(self.lang, 'hp')}: %v")
+        self.fearBar.setFormat(f"{_tr(self.lang, 'fear')}: %v")
+        self.survivalBar.setFormat(f"{_tr(self.lang, 'survival')}: %v")
+        self.energyBar.setFormat(f"{_tr(self.lang, 'energy')}: %v")
+        self.hungerBar.setFormat(f"{_tr(self.lang, 'hunger')}: %v")
         self.refresh_all()
 
     def _iter_world_agents(self):
@@ -1073,21 +1334,139 @@ class AgentBrainWidget(QtWidgets.QWidget):
                 parts = [f"{k}={v}" for k, v in getattr(ev, "data", {}).items()] if isinstance(getattr(ev, "data", {}), dict) else [str(getattr(ev, "data", ""))]
                 lines2.append(f'<span style="color:{color}">[t={getattr(ev, "tick", "?")}] {getattr(ev, "etype","?")}: {", ".join(parts)}</span>')
             return "<br/>\n".join(lines2)
-        return "(memory empty)"
+        return _tr(self.lang, "memory_empty")
+
+    def _learning_text_for_agent(self, ag: Agent) -> str:
+        report = self.trainer.get_agent_learning_report(ag.id, tail=8)
+        tail = report.get("tail", []) or []
+        latest = report.get("latest")
+        if not tail and not latest:
+            return _tr(self.lang, "learning_none")
+
+        lines: List[str] = []
+        buckets = (
+            ("learned", _tr(self.lang, "learned_header")),
+            ("strengthened_links", _tr(self.lang, "strengthened_header")),
+            ("changed_beliefs", _tr(self.lang, "changed_header")),
+        )
+        for entry in tail[-5:]:
+            tick = entry.get("tick", "?")
+            lines.append(f"[t={tick}]")
+            for key, title in buckets:
+                vals = entry.get(key, []) or []
+                if not vals:
+                    continue
+                lines.append(f"  {title}:")
+                for s in vals[:5]:
+                    lines.append(f"    - {s}")
+        return "\n".join(lines)
+
+    def _lineage_role_label(self, role: str) -> str:
+        role_norm = str(role or "balanced").strip().lower()
+        key = f"role_{role_norm}"
+        val = _tr(self.lang, key)
+        return val if val != key else role_norm
+
+    def _lineage_text_for_agent(self, ag: Agent) -> str:
+        w = self.trainer.world
+        if not w:
+            return _tr(self.lang, "lineage_none")
+
+        aid = str(getattr(ag, "id", ""))
+        gen = int(getattr(ag, "generation", 0))
+        role_raw = str(getattr(ag, "lineage_role", "balanced"))
+        role_lbl = self._lineage_role_label(role_raw)
+        parents = [str(x) for x in (getattr(ag, "parents", []) or []) if x]
+        parents_txt = ", ".join(parents) if parents else "—"
+
+        lines: List[str] = [
+            f"{_tr(self.lang, 'generation')}: {gen}",
+            f"{_tr(self.lang, 'lineage_role')}: {role_lbl}",
+            f"{_tr(self.lang, 'parents')}: {parents_txt}",
+        ]
+
+        events = list(getattr(w, "event_log", []) or [])
+        recent: List[str] = []
+        children: List[str] = []
+        siblings: List[str] = []
+        parent_set = set(parents)
+
+        for ev in events[-260:]:
+            et = str(ev.get("type", ""))
+            tick = ev.get("tick", "?")
+            if et == "seek_partner" and str(ev.get("who", "")) == aid:
+                tgt = str(ev.get("target", "?"))
+                recent.append(f"[t={tick}] seek_partner -> {tgt}")
+                continue
+
+            if et != "agent_birth":
+                continue
+
+            child_id = str(ev.get("child_id", "?"))
+            child_role = self._lineage_role_label(str(ev.get("lineage_role", "balanced")))
+            ev_parents = [str(x) for x in (ev.get("parents", []) or []) if x]
+
+            if child_id == aid:
+                recent.append(f"[t={tick}] born as role={child_role}")
+            if aid in ev_parents:
+                children.append(f"{child_id}({child_role})")
+                recent.append(f"[t={tick}] offspring -> {child_id} ({child_role})")
+            if parent_set and set(ev_parents) == parent_set and child_id != aid:
+                siblings.append(child_id)
+
+        if children:
+            uniq_children = []
+            seen_c = set()
+            for c in children:
+                if c in seen_c:
+                    continue
+                seen_c.add(c)
+                uniq_children.append(c)
+            tail_children = uniq_children[:8]
+            suffix = " ..." if len(uniq_children) > 8 else ""
+            lines.append(f"{_tr(self.lang, 'lineage_children')}: " + ", ".join(tail_children) + suffix)
+
+        if siblings:
+            uniq_siblings = []
+            seen_s = set()
+            for s in siblings:
+                if s in seen_s:
+                    continue
+                seen_s.add(s)
+                uniq_siblings.append(s)
+            tail_siblings = uniq_siblings[:8]
+            suffix = " ..." if len(uniq_siblings) > 8 else ""
+            lines.append(f"{_tr(self.lang, 'lineage_siblings')}: " + ", ".join(tail_siblings) + suffix)
+
+        if recent:
+            lines.append("")
+            lines.append(_tr(self.lang, "lineage_recent"))
+            for row in recent[-8:]:
+                lines.append(f"  - {row}")
+        else:
+            lines.append("")
+            lines.append(_tr(self.lang, "lineage_none"))
+        return "\n".join(lines)
 
     @Slot()
     def refresh_all(self):
         ag = self.get_selected_agent()
         if ag is None:
-            self.lblName.setText("Agent: —"); self.lblDrive.setText("drive: –")
-            self.lblAlly.setText("ally_anchor: –"); self.lblDeathReason.setText("last_death_reason: –")
-            self.lblThought.setText("thought: –"); self.lblPets.setText("pets: –")
+            self.lblName.setText(f"{_tr(self.lang, 'agent')}: —"); self.lblDrive.setText(f"{_tr(self.lang, 'drive')}: –")
+            self.lblAlly.setText(f"{_tr(self.lang, 'ally_anchor')}: –")
+            self.lblGeneration.setText(f"{_tr(self.lang, 'generation')}: –")
+            self.lblParents.setText(f"{_tr(self.lang, 'parents')}: –")
+            self.lblLineageRole.setText(f"{_tr(self.lang, 'lineage_role')}: –")
+            self.lblDeathReason.setText(f"{_tr(self.lang, 'last_death_reason')}: –")
+            self.lblThought.setText(f"{_tr(self.lang, 'thought')}: –"); self.lblPets.setText(f"{_tr(self.lang, 'pets')}: –")
             for bar in (self.hpBar, self.fearBar, self.survivalBar, self.energyBar, self.hungerBar): bar.setValue(0)
-            self.behaviorText.setPlainText("(нет данных)"); self.memoryView.setHtml("(нет данных)")
+            self.behaviorText.setPlainText(_tr(self.lang, "no_data")); self.memoryView.setHtml(_tr(self.lang, "no_data"))
+            self.learningView.setPlainText(_tr(self.lang, "no_data"))
+            self.lineageView.setPlainText(_tr(self.lang, "no_data"))
             self.belief2D.update_from_brain(None); self.belief3D.update_from_brain(None); return
 
         brain = getattr(ag, "brain", None)
-        self.lblName.setText(f"Agent: {ag.name} ({ag.id})")
+        self.lblName.setText(f"{_tr(self.lang, 'agent')}: {ag.name} ({ag.id})")
 
         pets_list = self._pets_for_agent(ag)
         if pets_list:
@@ -1099,9 +1478,9 @@ class AgentBrainWidget(QtWidgets.QWidget):
                 if hp_val is not None: frag += f" hp={int(hp_val)}"
                 if mood: frag += f" ({mood})"
                 pet_desc.append(frag)
-            self.lblPets.setText("pets: " + ", ".join(pet_desc))
+            self.lblPets.setText(f"{_tr(self.lang, 'pets')}: " + ", ".join(pet_desc))
         else:
-            self.lblPets.setText("pets: –")
+            self.lblPets.setText(f"{_tr(self.lang, 'pets')}: –")
 
         hp_val = int(_clamp(_safe_float(getattr(ag, "health", 0.0), 0.0), 0.0, 100.0))
         fear_raw = _safe_float(getattr(brain, "fear_level", getattr(ag, "fear", 0.0) if ag else 0.0), 0.0)
@@ -1121,10 +1500,17 @@ class AgentBrainWidget(QtWidgets.QWidget):
         last_death_reason = getattr(brain, "last_death_reason", None) if brain else None
         if not last_death_reason and hasattr(ag, "cause_of_death"): last_death_reason = ag.cause_of_death
         last_thought = getattr(brain, "last_thought", "–") if brain else "–"
-        self.lblDrive.setText(f"drive: {drive_txt}")
-        self.lblAlly.setText(f"ally_anchor: {ally_anchor if ally_anchor else '–'}")
-        self.lblDeathReason.setText(f"last_death_reason: {last_death_reason if last_death_reason else '–'}")
-        self.lblThought.setText(f"thought: {last_thought}")
+        gen_val = int(getattr(ag, "generation", 0))
+        parents_val = [str(x) for x in (getattr(ag, "parents", []) or []) if x]
+        role_raw = str(getattr(ag, "lineage_role", "balanced"))
+        role_txt = self._lineage_role_label(role_raw)
+        self.lblDrive.setText(f"{_tr(self.lang, 'drive')}: {drive_txt}")
+        self.lblAlly.setText(f"{_tr(self.lang, 'ally_anchor')}: {ally_anchor if ally_anchor else '–'}")
+        self.lblGeneration.setText(f"{_tr(self.lang, 'generation')}: {gen_val}")
+        self.lblParents.setText(f"{_tr(self.lang, 'parents')}: {', '.join(parents_val) if parents_val else '—'}")
+        self.lblLineageRole.setText(f"{_tr(self.lang, 'lineage_role')}: {role_txt}")
+        self.lblDeathReason.setText(f"{_tr(self.lang, 'last_death_reason')}: {last_death_reason if last_death_reason else '–'}")
+        self.lblThought.setText(f"{_tr(self.lang, 'thought')}: {last_thought}")
 
         behavior_dump: Any = ""
         if brain is not None and getattr(brain, "behavior_rules", None):
@@ -1149,13 +1535,18 @@ class AgentBrainWidget(QtWidgets.QWidget):
                 f"curiosity_charge    = {curiosity:.2f}\n"
                 f"trauma_spots        = {len(trauma_map)}\n"
                 f"pets_owned          = {len(pets_list)}\n"
+                f"generation          = {gen_val}\n"
+                f"lineage_role        = {role_raw}\n"
+                f"parents             = {parents_val if parents_val else '—'}\n"
             )
             if last_death_reason: behavior_dump += f"last_death_reason  = {last_death_reason}\n"
 
         # Ключевая правка: безопасное приведение к строке
-        self.behaviorText.setPlainText(_to_text(behavior_dump if behavior_dump else "(no brain data)"))
+        self.behaviorText.setPlainText(_to_text(behavior_dump if behavior_dump else _tr(self.lang, "no_data")))
 
         self.memoryView.setHtml(self._memory_html_for_agent(ag, brain))
+        self.learningView.setPlainText(self._learning_text_for_agent(ag))
+        self.lineageView.setPlainText(self._lineage_text_for_agent(ag))
 
         self.belief2D.update_from_brain(brain)
         self.belief3D.update_from_brain(brain)
@@ -1170,6 +1561,7 @@ class TrainerStatsWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.trainer = trainer
         self.running = False
+        self.lang = "ru"
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8); outer.setSpacing(8)
@@ -1199,6 +1591,12 @@ class TrainerStatsWidget(QtWidgets.QWidget):
         self.lblClingRatio = QtWidgets.QLabel("cling_ratio: 0.00")
         self.lblAvgPets = QtWidgets.QLabel("avg_pets: 0.00")
         self.lblTameRatio = QtWidgets.QLabel("tame_ratio: 0.00")
+        # Явные счётчики сигналов обучения по эпохе.
+        self.lblLearningEvents = QtWidgets.QLabel("learning_events: 0")
+        self.lblLearnedSkills = QtWidgets.QLabel("learned_skills: 0")
+        self.lblStrengthenedLinks = QtWidgets.QLabel("strengthened_links: 0")
+        self.lblBeliefChanges = QtWidgets.QLabel("belief_changes: 0")
+        self.lblPeerSharedLessons = QtWidgets.QLabel("peer_shared_lessons: 0")
         self.lblNote = QtWidgets.QLabel("note: —")
 
         row = 0
@@ -1206,7 +1604,9 @@ class TrainerStatsWidget(QtWidgets.QWidget):
             self.lblAvgFear, self.lblAvgHP, self.lblAvgEnergy, self.lblAvgHunger,
             self.lblAvgCuriosity, self.lblAvgSurvival, self.lblAvgAge, self.lblAvgTrauma,
             self.lblAliveRatio, self.lblPanicRatio, self.lblClingRatio, self.lblAvgPets,
-            self.lblTameRatio, self.lblNote,
+            self.lblTameRatio, self.lblLearningEvents, self.lblLearnedSkills,
+            self.lblStrengthenedLinks, self.lblBeliefChanges, self.lblPeerSharedLessons,
+            self.lblNote,
         ]:
             grid.addWidget(w, row, 0); row += 1
 
@@ -1232,15 +1632,23 @@ class TrainerStatsWidget(QtWidgets.QWidget):
         self.btnStartPause.clicked.connect(self.on_start_pause_clicked)
         self.btnNextEpoch.clicked.connect(self.on_next_epoch_clicked)
         self.btnSaveBrains.clicked.connect(self.on_save_clicked)
+        self.set_language(self.lang)
+        self.refresh_monitor()
+
+    def set_language(self, lang: str):
+        self.lang = "ru" if lang == "ru" else "en"
+        self.btnNextEpoch.setText(_tr(self.lang, "next_epoch"))
+        self.btnSaveBrains.setText(_tr(self.lang, "save_brains"))
+        self.btnStartPause.setText(_tr(self.lang, "pause") if self.running else _tr(self.lang, "start"))
         self.refresh_monitor()
 
     @Slot()
     def on_start_pause_clicked(self):
         self.running = not self.running
         if self.running:
-            self.btnStartPause.setText("Pause"); self.timer.start()
+            self.btnStartPause.setText(_tr(self.lang, "pause")); self.timer.start()
         else:
-            self.btnStartPause.setText("Start"); self.timer.stop()
+            self.btnStartPause.setText(_tr(self.lang, "start")); self.timer.stop()
 
     @Slot()
     def on_next_epoch_clicked(self):
@@ -1249,7 +1657,7 @@ class TrainerStatsWidget(QtWidgets.QWidget):
     @Slot()
     def on_save_clicked(self):
         self.trainer.save_brains_now("./trained_brains")
-        self.lblNote.setText("note: brains saved → ./trained_brains")
+        self.lblNote.setText(_tr(self.lang, "brains_saved"))
 
     @Slot()
     def _on_timer_tick(self):
@@ -1258,21 +1666,26 @@ class TrainerStatsWidget(QtWidgets.QWidget):
     @Slot()
     def refresh_monitor(self):
         m = self.trainer.monitor
-        self.lblEpoch.setText(f"Epoch: {m.epoch} | Tick: {m.tick}")
-        self.lblAvgFear.setText(f"avg_fear: {m.avg_fear:.2f}")
-        self.lblAvgHP.setText(f"avg_hp: {m.avg_hp:.1f}")
-        self.lblAvgEnergy.setText(f"avg_energy: {m.avg_energy:.1f}")
-        self.lblAvgHunger.setText(f"avg_hunger: {m.avg_hunger:.1f}")
-        self.lblAvgCuriosity.setText(f"avg_curiosity: {m.avg_curiosity:.2f}")
-        self.lblAvgSurvival.setText(f"avg_survival: {m.avg_survival:.2f}")
-        self.lblAvgAge.setText(f"avg_age: {m.avg_age:.1f}")
-        self.lblAvgTrauma.setText(f"avg_trauma_spots: {m.avg_trauma_spots:.1f}")
-        self.lblAliveRatio.setText(f"alive_ratio: {m.alive_ratio:.2f}")
-        self.lblPanicRatio.setText(f"panic_ratio: {m.panic_ratio:.2f}")
-        self.lblClingRatio.setText(f"cling_ratio: {m.cling_ratio:.2f}")
-        self.lblAvgPets.setText(f"avg_pets: {m.avg_pets:.2f}")
-        self.lblTameRatio.setText(f"tame_ratio: {m.tame_ratio:.2f}")
-        self.lblNote.setText(f"note: {m.note}")
+        self.lblEpoch.setText(_tr(self.lang, "epoch_tick").format(epoch=m.epoch, tick=m.tick))
+        self.lblAvgFear.setText(f"{_tr(self.lang, 'avg_fear')}: {m.avg_fear:.2f}")
+        self.lblAvgHP.setText(f"{_tr(self.lang, 'avg_hp')}: {m.avg_hp:.1f}")
+        self.lblAvgEnergy.setText(f"{_tr(self.lang, 'avg_energy')}: {m.avg_energy:.1f}")
+        self.lblAvgHunger.setText(f"{_tr(self.lang, 'avg_hunger')}: {m.avg_hunger:.1f}")
+        self.lblAvgCuriosity.setText(f"{_tr(self.lang, 'avg_curiosity')}: {m.avg_curiosity:.2f}")
+        self.lblAvgSurvival.setText(f"{_tr(self.lang, 'avg_survival')}: {m.avg_survival:.2f}")
+        self.lblAvgAge.setText(f"{_tr(self.lang, 'avg_age')}: {m.avg_age:.1f}")
+        self.lblAvgTrauma.setText(f"{_tr(self.lang, 'avg_trauma_spots')}: {m.avg_trauma_spots:.1f}")
+        self.lblAliveRatio.setText(f"{_tr(self.lang, 'alive_ratio')}: {m.alive_ratio:.2f}")
+        self.lblPanicRatio.setText(f"{_tr(self.lang, 'panic_ratio')}: {m.panic_ratio:.2f}")
+        self.lblClingRatio.setText(f"{_tr(self.lang, 'cling_ratio')}: {m.cling_ratio:.2f}")
+        self.lblAvgPets.setText(f"{_tr(self.lang, 'avg_pets')}: {m.avg_pets:.2f}")
+        self.lblTameRatio.setText(f"{_tr(self.lang, 'tame_ratio')}: {m.tame_ratio:.2f}")
+        self.lblLearningEvents.setText(f"{_tr(self.lang, 'learning_events')}: {m.learning_events}")
+        self.lblLearnedSkills.setText(f"{_tr(self.lang, 'learned_skills')}: {m.learned_skills}")
+        self.lblStrengthenedLinks.setText(f"{_tr(self.lang, 'strengthened_links')}: {m.strengthened_links}")
+        self.lblBeliefChanges.setText(f"{_tr(self.lang, 'belief_changes')}: {m.belief_changes}")
+        self.lblPeerSharedLessons.setText(f"{_tr(self.lang, 'peer_shared_lessons')}: {m.peer_shared_lessons}")
+        self.lblNote.setText(f"{_tr(self.lang, 'note')}: {m.note}")
 
 
 # =============================================================================
@@ -1282,7 +1695,8 @@ class TrainerStatsWidget(QtWidgets.QWidget):
 class TrainerMainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mind Trainer Lab — эволюция сознаний и зверей")
+        self.lang = "ru"
+        self.setWindowTitle(_tr(self.lang, "window_title"))
         self.resize(1500, 900)
         self.setStyleSheet("QMainWindow { background-color:#0f0f14; color:#eee; } QLabel { color:#eee; }")
 
@@ -1304,13 +1718,52 @@ class TrainerMainWindow(QtWidgets.QMainWindow):
         self.brainWidget = AgentBrainWidget(self.trainer)
 
         central = QtWidgets.QWidget()
-        outer = QtWidgets.QHBoxLayout(central)
-        outer.setContentsMargins(12, 12, 12, 12); outer.setSpacing(12)
-        outer.addWidget(self.statsWidget, 0)
-        outer.addWidget(self.brainWidget, 1)
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(12, 12, 12, 12); outer.setSpacing(10)
+
+        topBar = QtWidgets.QHBoxLayout()
+        topBar.addStretch(1)
+        self.lblLang = QtWidgets.QLabel(_tr(self.lang, "language"))
+        self.comboLang = QtWidgets.QComboBox()
+        self.comboLang.addItem(_tr(self.lang, "combo_ru"), "ru")
+        self.comboLang.addItem(_tr(self.lang, "combo_en"), "en")
+        self.comboLang.currentIndexChanged.connect(self._on_language_changed)
+        topBar.addWidget(self.lblLang)
+        topBar.addWidget(self.comboLang)
+        outer.addLayout(topBar)
+
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(12)
+        body.addWidget(self.statsWidget, 0)
+        body.addWidget(self.brainWidget, 1)
+        outer.addLayout(body, 1)
+
         self.setCentralWidget(central)
         self.statusBar().setStyleSheet("color:#bbb; background-color:#1a1a23;")
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage(_tr(self.lang, "ready"))
+        self.set_language(self.lang)
+
+    @Slot()
+    def _on_language_changed(self):
+        data = self.comboLang.currentData()
+        self.set_language(str(data) if data else "ru")
+
+    def set_language(self, lang: str):
+        self.lang = "ru" if lang == "ru" else "en"
+        self.setWindowTitle(_tr(self.lang, "window_title"))
+        self.lblLang.setText(_tr(self.lang, "language"))
+
+        # Обновляем подписи пунктов, сохраняя выбранный язык.
+        self.comboLang.blockSignals(True)
+        self.comboLang.setItemText(0, _tr(self.lang, "combo_ru"))
+        self.comboLang.setItemText(1, _tr(self.lang, "combo_en"))
+        idx = 0 if self.lang == "ru" else 1
+        self.comboLang.setCurrentIndex(idx)
+        self.comboLang.blockSignals(False)
+
+        self.statsWidget.set_language(self.lang)
+        self.brainWidget.set_language(self.lang)
+        self.statusBar().showMessage(_tr(self.lang, "ready"))
 
 
 # =============================================================================

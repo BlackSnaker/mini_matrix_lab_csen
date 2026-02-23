@@ -63,6 +63,38 @@ AGENT_FEAR_FIGHT_THRESHOLD = 0.65
 ALLY_HELP_RADIUS = 4.0            # кто считается «рядом» для прибавки смелости
 PETS_DEFEND_OWNER = True          # приручённые бьют обидчика хозяина
 
+# Приручение волков и помощь питомцев (wolf_taming_system.py)
+AGENT_CAN_TAME_WOLVES = True      # разрешить приручение волков
+WOLF_TAME_RADIUS = 2.5            # дистанция попытки приручения
+WOLF_TAME_ATTEMPT_COOLDOWN = 6    # тиков между попытками приручения
+WOLF_DEFEND_RADIUS = 7.0          # радиус, в котором питомец ищет угрозу хозяину
+WOLF_DEFEND_BITE_RANGE = 1.4      # дистанция укуса питомца по угрозе
+WOLF_DEFEND_DAMAGE = 7.0          # базовый урон питомца при защите
+WOLF_DEFEND_COOLDOWN = 12         # кулдаун укуса питомца в тиках
+# Передача опыта приручения союзникам (социальное обучение).
+WOLF_TAME_SHARE_ENABLED = True    # если True — опыт приручения передаётся союзникам рядом
+WOLF_TAME_SHARE_RADIUS = 8.0      # радиус «обучения рядом»
+WOLF_TAME_SHARE_RATIO = 0.35      # доля опыта учителя, доступная ученикам
+WOLF_TAME_SHARE_MIN_GAIN = 0.004  # минимальный прирост навыка у ученика за эпизод
+WOLF_TAME_SHARE_MAX_GAIN = 0.040  # верхняя граница прироста навыка у ученика за эпизод
+
+# Размножение агентов (agent_reproduction_system.py)
+AGENT_REPRO_ENABLED = True             # включить поиск партнёра и рождение нового поколения
+AGENT_REPRO_MAX_POPULATION = 10        # жёсткий лимит численности популяции в мире
+AGENT_REPRO_MATURITY_TICKS = 180       # минимальный возраст агента для размножения
+AGENT_REPRO_COOLDOWN_TICKS = 260       # откат между рождениями для одного агента
+AGENT_REPRO_SEARCH_RADIUS = 24.0       # как далеко ищем потенциального партнёра
+AGENT_REPRO_MATE_RADIUS = 2.2          # дистанция, на которой пара может родить потомка
+AGENT_REPRO_SEARCH_INTERVAL = 18       # как часто обновляем цель «к партнёру»
+AGENT_REPRO_HEALTH_MIN = 55.0          # минимум здоровья для размножения
+AGENT_REPRO_ENERGY_MIN = 40.0          # минимум энергии (в процентах, с авто-нормализацией)
+AGENT_REPRO_HUNGER_MAX = 70.0          # максимум голода (в процентах, с авто-нормализацией)
+AGENT_REPRO_FEAR_MAX = 0.55            # максимум страха для готовности к размножению
+AGENT_REPRO_INHERIT_BELIEFS = 18       # сколько топ-убеждений переносим в новое поколение
+AGENT_REPRO_RULE_NOISE = 0.05          # шум/мутация поведенческих правил при наследовании
+AGENT_REPRO_SKILL_NOISE = 0.06         # шум/мутация боевых/приручающих навыков
+AGENT_REPRO_ROLE_MUTATION_PROB = 0.12  # шанс мутации генетической роли в новом поколении
+
 # Параметры укуса животных
 ANIMAL_BITE_RANGE = 1.4           # радиус укуса зверя
 

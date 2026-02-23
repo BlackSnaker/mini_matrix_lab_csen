@@ -10,6 +10,8 @@ import config
 
 # серверная модель зверя
 from animals import Animal as AnimalSim
+from wolf_taming_system import WolfTamingSystem
+from agent_reproduction_system import AgentReproductionSystem
 # Агент теперь в отдельном модуле, но оставляем совместимость импорта: from world import Agent
 from agent import Agent  # re-export для server.py
 
@@ -177,7 +179,7 @@ def _agent_default_public(self: Agent) -> Dict[str, Any]:
     except Exception:
         yaw = 0.0
 
-    return {
+    out = {
         "id": getattr(self, "id", None),
         "name": getattr(self, "name", f"agent-{getattr(self, 'id', 'unknown')}"),
 
@@ -199,6 +201,16 @@ def _agent_default_public(self: Agent) -> Dict[str, Any]:
         # Необязательные поля для HUD
         "tags": list(getattr(self, "tags", [])) if hasattr(self, "tags") else [],
     }
+    if hasattr(self, "generation"):
+        out["generation"] = int(getattr(self, "generation", 0))
+    if hasattr(self, "parents"):
+        try:
+            out["parents"] = list(getattr(self, "parents", []) or [])
+        except Exception:
+            out["parents"] = []
+    if hasattr(self, "lineage_role"):
+        out["lineage_role"] = str(getattr(self, "lineage_role", "balanced"))
+    return out
 
 # Если в Agent ещё нет метода — подмешиваем дефолтный
 if not hasattr(Agent, "serialize_public_state"):
@@ -272,6 +284,7 @@ class World:
     Новое:
     - export_for_engine3d(): готовит sync-пакет для 3D-движка (позиции, yaw, pos3d, цели, HUD).
     - fightback: агенты могут бить агрессивных зверей в мили, с кулдауном и модификаторами.
+    - reproduction: агенты ищут партнёров и могут рождать новое поколение.
     """
 
     def __init__(self, width: float, height: float):
@@ -290,6 +303,10 @@ class World:
 
         # Кулдауны ударов агентов (tick номер, раньше — нельзя)
         self._agent_next_attack_tick: Dict[str, int] = {}
+        # Отдельный модуль: обучение приручению волков + защита хозяев питомцами.
+        self.wolf_taming = WolfTamingSystem(self)
+        # Отдельный модуль: поиск партнёра + рождение + наследование опыта.
+        self.agent_reproduction = AgentReproductionSystem(self)
 
         # Назначаем глобальный синк (и вливаем отложенные события)
         if _GLOBAL_WORLD_EVENT_SINK is None:
@@ -548,11 +565,18 @@ class World:
         """
         Реализует один мили-удар с модификаторами состояния.
         """
-        # Базовый урон
-        base = float(getattr(config, "AGENT_BASE_ATTACK_POWER", 8.0))
+        # NEW: база урона берётся из агента и усиливается его боевым навыком.
+        base = float(getattr(a, "attack_power", getattr(config, "AGENT_BASE_ATTACK_POWER", 8.0)))
+        skill = max(0.0, min(5.0, float(getattr(a, "combat_skill", 0.0))))
+        base *= (1.0 + 0.08 * skill)
 
+        # NEW: поддержка двух шкал энергии (0..1 и 0..100), чтобы не ломать баланс урона.
         # Модификаторы: энергия/здоровье (0..1), страх (пенальти), союз/питомец (бонус)
-        energy_ratio = max(0.0, min(1.0, float(getattr(a, "energy", 100.0)) / 100.0))
+        energy_raw = float(getattr(a, "energy", 100.0))
+        if energy_raw <= 1.0:
+            energy_ratio = max(0.0, min(1.0, energy_raw))
+        else:
+            energy_ratio = max(0.0, min(1.0, energy_raw / 100.0))
         health_ratio = max(0.0, min(1.0, float(getattr(a, "health", 100.0)) / 100.0))
         fear = self._effective_fear(a)
 
@@ -567,6 +591,24 @@ class World:
         dmg = max(1.0, round(dmg, 1))
 
         died = self._animal_apply_damage(ani, dmg, a.id, a.name)
+        # NEW: рост навыка за боевой опыт (больше за добивание), плюс снижение страха за успех.
+        if died:
+            a.combat_skill = min(5.0, float(getattr(a, "combat_skill", 0.0)) + 0.12)
+            a.fear = max(0.0, float(getattr(a, "fear", 0.0)) - 0.06)
+        else:
+            a.combat_skill = min(5.0, float(getattr(a, "combat_skill", 0.0)) + 0.02)
+
+        try:
+            br = getattr(a, "brain", None)
+            if br and hasattr(br, "note_combat_feedback"):
+                # NEW: положительная обратная связь в мозг за активное боевое действие.
+                br.note_combat_feedback(
+                    hp_delta=0.0,
+                    dist_delta=-1.0,  # факт входа в мили для удара
+                    done=bool(died),
+                )
+        except Exception:
+            pass
 
         # Кулдаун
         cd = int(getattr(config, "AGENT_ATTACK_COOLDOWN", 18))
@@ -667,11 +709,31 @@ class World:
                 if not self._is_animal_alive(a):
                     del self.animals[uid]
 
+        # 1.5) приручение волков и защита хозяев приручёнными волками
+        try:
+            if getattr(self, "wolf_taming", None):
+                self.wolf_taming.step()
+        except Exception as e:
+            self.add_event({
+                "type": "wolf_taming_error",
+                "err": str(e),
+            })
+
         # 2) агенты: жизнь + движение + речь + мозг
         for agent in list(self.agents.values()):
             agent.tick(self)
             # NEW: после шага — возможен ответный мили-удар
             self._process_agent_fightback(agent)
+
+        # 2.5) размножение агентов и рождение нового поколения
+        try:
+            if getattr(self, "agent_reproduction", None):
+                self.agent_reproduction.step()
+        except Exception as e:
+            self.add_event({
+                "type": "agent_reproduction_error",
+                "err": str(e),
+            })
 
         # 3) глобальный тик
         self.tick_count += 1
