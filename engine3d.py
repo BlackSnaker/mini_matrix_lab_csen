@@ -77,6 +77,20 @@ MAX_HUD_DISTANCE    = 80.0      # LOD: дальше этого HUD не рису
 FOV_DEG             = 80.0      # базовая ширина FOV-конуса
 FOV_RANGE           = 7.0       # базовая дальность FOV-конуса
 
+# Sun / daylight
+SUN_ENABLED = True
+SUN_CYCLE_SEC = 180.0           # полный цикл "день" (сек) — без ночи, только дневной дрейф
+SUN_MIN_ELEV_DEG = 28.0         # минимальная высота солнца над горизонтом
+SUN_MAX_ELEV_DEG = 76.0         # максимальная высота солнца над горизонтом
+SUN_BASE_HEIGHT = 26.0          # базовая высота солнца над картой
+
+# Текущее состояние солнца (обновляется движком каждый кадр)
+_SUN_DIR = (0.50, 0.84, 0.18)   # нормализованный вектор света
+_SUN_COLOR = (1.0, 0.96, 0.88)  # тёплый дневной оттенок
+_SUN_AMBIENT = 0.36
+_SUN_DIFFUSE = 0.76
+_SKY_COLOR = (0.53, 0.73, 0.96)
+
 
 # ---------------------------------------------------------------------
 # Вспомогательная математика
@@ -368,17 +382,46 @@ class DamageNumber:
 # Рендер-помощники (иммедиат режим)
 # ---------------------------------------------------------------------
 
-def _fake_lighting_color(base: Tuple[float, float, float], normal_y: float) -> Tuple[float, float, float]:
-    r, g, b = base
-    light = clamp(0.3 + normal_y * 0.7, 0.2, 1.0)
-    return (r * light, g * light, b * light)
+def _fake_lighting_color(
+    base: Tuple[float, float, float],
+    normal_x: float = 0.0,
+    normal_y: float = 1.0,
+    normal_z: float = 0.0,
+) -> Tuple[float, float, float]:
+    """
+    Упрощённый "свет солнца":
+    - ambient + diffuse по dot(normal, sun_dir)
+    - лёгкий up-bias, чтобы верхние грани всегда читались.
+    """
+    nx, ny, nz = float(normal_x), float(normal_y), float(normal_z)
+    nlen = math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9
+    nx /= nlen
+    ny /= nlen
+    nz /= nlen
+
+    sx, sy, sz = _SUN_DIR
+    dot = max(0.0, nx * sx + ny * sy + nz * sz)
+
+    light = _SUN_AMBIENT + _SUN_DIFFUSE * dot + 0.10 * max(0.0, ny)
+    light = clamp(light, 0.14, 1.35)
+
+    warm_r, warm_g, warm_b = _SUN_COLOR
+    r = clamp(base[0] * light * warm_r, 0.0, 1.0)
+    g = clamp(base[1] * light * warm_g, 0.0, 1.0)
+    b = clamp(base[2] * light * warm_b, 0.0, 1.0)
+    return (r, g, b)
 
 
 def _draw_floor_grid(world_w: float, world_h: float):
-    base_col = (0.08, 0.08, 0.10)
-    lit_col = _fake_lighting_color(base_col, normal_y=1.0)
+    """
+    Слой земли + сетка.
+    Сделано чуть "богаче", чтобы карта лучше читалась на больших масштабах.
+    """
+    ground_boost = clamp(_SUN_AMBIENT + 0.40 * _SUN_DIFFUSE, 0.25, 1.10)
 
-    glColor3f(*lit_col)
+    # Базовая подложка.
+    c0 = _fake_lighting_color((0.12 * ground_boost, 0.17 * ground_boost, 0.14 * ground_boost), 0.0, 1.0, 0.0)
+    glColor3f(*c0)
     glBegin(GL_QUADS)
     glVertex3f(0.0,      0.0,      0.0)
     glVertex3f(world_w,  0.0,      0.0)
@@ -386,20 +429,71 @@ def _draw_floor_grid(world_w: float, world_h: float):
     glVertex3f(0.0,      0.0,      world_h)
     glEnd()
 
-    glColor3f(0.2, 0.2, 0.3)
+    # Продольные "полосы" цвета по Z, чтобы плоскость не была плоской по тону.
+    bands = 18
+    for i in range(bands):
+        t0 = i / float(bands)
+        t1 = (i + 1) / float(bands)
+        z0 = world_h * t0
+        z1 = world_h * t1
+        c = 0.05 + 0.03 * math.sin((t0 + t1) * math.pi * 2.0)
+        cc = _fake_lighting_color(
+            (0.10 + c * 0.09, 0.15 + c * 0.14, 0.11 + c * 0.07),
+            0.0, 1.0, 0.0
+        )
+        glColor3f(*cc)
+        glBegin(GL_QUADS)
+        glVertex3f(0.0,      0.0002, z0)
+        glVertex3f(world_w,  0.0002, z0)
+        glVertex3f(world_w,  0.0002, z1)
+        glVertex3f(0.0,      0.0002, z1)
+        glEnd()
+
+    # Минорная сетка.
+    minor_step = max(5.0, min(world_w, world_h) / 22.0)
+    grid_minor = _fake_lighting_color((0.23, 0.25, 0.24), 0.0, 1.0, 0.0)
+    glColor3f(*grid_minor)
     glLineWidth(1.0)
     glBegin(GL_LINES)
-    step = 10.0
     x = 0.0
     while x <= world_w + 0.001:
         glVertex3f(x, 0.001, 0.0)
         glVertex3f(x, 0.001, world_h)
-        x += step
+        x += minor_step
     z = 0.0
     while z <= world_h + 0.001:
         glVertex3f(0.0,      0.001, z)
         glVertex3f(world_w,  0.001, z)
-        z += step
+        z += minor_step
+    glEnd()
+
+    # Мажорная сетка (толще и светлее) каждые 4 шага.
+    major_step = minor_step * 4.0
+    grid_major = _fake_lighting_color((0.32, 0.35, 0.33), 0.0, 1.0, 0.0)
+    glColor3f(*grid_major)
+    glLineWidth(1.4)
+    glBegin(GL_LINES)
+    x = 0.0
+    while x <= world_w + 0.001:
+        glVertex3f(x, 0.0015, 0.0)
+        glVertex3f(x, 0.0015, world_h)
+        x += major_step
+    z = 0.0
+    while z <= world_h + 0.001:
+        glVertex3f(0.0,      0.0015, z)
+        glVertex3f(world_w,  0.0015, z)
+        z += major_step
+    glEnd()
+
+    # Контур мира.
+    border_col = _fake_lighting_color((0.75, 0.79, 0.82), 0.0, 1.0, 0.0)
+    glColor3f(*border_col)
+    glLineWidth(2.4)
+    glBegin(GL_LINES)
+    glVertex3f(0.0,      0.003, 0.0);      glVertex3f(world_w,  0.003, 0.0)
+    glVertex3f(world_w,  0.003, 0.0);      glVertex3f(world_w,  0.003, world_h)
+    glVertex3f(world_w,  0.003, world_h);  glVertex3f(0.0,      0.003, world_h)
+    glVertex3f(0.0,      0.003, world_h);  glVertex3f(0.0,      0.003, 0.0)
     glEnd()
 
 
@@ -496,14 +590,76 @@ def _draw_oriented_box(
         ny = uz * vx - ux * vz
         nz = ux * vy - uy * vx
         nlen = math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9
+        nx /= nlen
         ny /= nlen
+        nz /= nlen
 
-        lit = _fake_lighting_color(base_color, normal_y=ny)
+        lit = _fake_lighting_color(base_color, normal_x=nx, normal_y=ny, normal_z=nz)
         glColor3f(*lit)
 
         for idx in f:
             glVertex3f(*V(idx))
     glEnd()
+
+
+def _mix_rgb(
+    a: Tuple[float, float, float],
+    b: Tuple[float, float, float],
+    t: float,
+) -> Tuple[float, float, float]:
+    tt = clamp(t, 0.0, 1.0)
+    return (
+        a[0] * (1.0 - tt) + b[0] * tt,
+        a[1] * (1.0 - tt) + b[1] * tt,
+        a[2] * (1.0 - tt) + b[2] * tt,
+    )
+
+
+def _draw_sphere_lowpoly(
+    cx: float,
+    cy: float,
+    cz: float,
+    radius: float,
+    base_color: Tuple[float, float, float],
+    *,
+    lat_steps: int = 7,
+    lon_steps: int = 10,
+):
+    """
+    Низкополигональная сфера (голова/суставы), но визуально мягче плоского диска.
+    """
+    lat_steps = max(3, int(lat_steps))
+    lon_steps = max(6, int(lon_steps))
+    for i in range(lat_steps):
+        v0 = i / float(lat_steps)
+        v1 = (i + 1) / float(lat_steps)
+        lat0 = -0.5 * math.pi + v0 * math.pi
+        lat1 = -0.5 * math.pi + v1 * math.pi
+        y0 = math.sin(lat0); r0 = math.cos(lat0)
+        y1 = math.sin(lat1); r1 = math.cos(lat1)
+
+        for j in range(lon_steps):
+            u0 = j / float(lon_steps)
+            u1 = (j + 1) / float(lon_steps)
+            lon0 = u0 * 2.0 * math.pi
+            lon1 = u1 * 2.0 * math.pi
+
+            p00 = (cx + radius * r0 * math.cos(lon0), cy + radius * y0, cz + radius * r0 * math.sin(lon0))
+            p10 = (cx + radius * r0 * math.cos(lon1), cy + radius * y0, cz + radius * r0 * math.sin(lon1))
+            p11 = (cx + radius * r1 * math.cos(lon1), cy + radius * y1, cz + radius * r1 * math.sin(lon1))
+            p01 = (cx + radius * r1 * math.cos(lon0), cy + radius * y1, cz + radius * r1 * math.sin(lon0))
+
+            mx = 0.25 * (p00[0] + p10[0] + p11[0] + p01[0]) - cx
+            my = 0.25 * (p00[1] + p10[1] + p11[1] + p01[1]) - cy
+            mz = 0.25 * (p00[2] + p10[2] + p11[2] + p01[2]) - cz
+            lit = _fake_lighting_color(base_color, normal_x=mx, normal_y=my, normal_z=mz)
+            glColor3f(*lit)
+            glBegin(GL_QUADS)
+            glVertex3f(*p00)
+            glVertex3f(*p10)
+            glVertex3f(*p11)
+            glVertex3f(*p01)
+            glEnd()
 
 
 def _draw_head_disc(
@@ -515,26 +671,21 @@ def _draw_head_disc(
     forward_lean: float,
 ):
     """
-    "Голова" человека — просто белый диск над корпусом.
+    Совместимый API: рисуем не диск, а упрощённую сферу головы.
     """
     cos_y = math.cos(yaw_rad)
     sin_y = math.sin(yaw_rad)
-
-    head_cx = cx + math.sin(forward_lean) * cos_y * 0.2
-    head_cz = cz + math.sin(forward_lean) * sin_y * 0.2
-    head_cy = cy
-
-    glColor3f(1.0, 1.0, 1.0)
-    glBegin(GL_TRIANGLE_FAN)
-    glVertex3f(head_cx, head_cy, head_cz)
-
-    steps = 20
-    for i in range(steps + 1):
-        ang = (2.0 * math.pi) * (i / steps)
-        vx = head_cx + math.cos(ang) * radius
-        vz = head_cz + math.sin(ang) * radius
-        glVertex3f(vx, head_cy, vz)
-    glEnd()
+    head_cx = cx + math.sin(forward_lean) * cos_y * 0.20
+    head_cz = cz + math.sin(forward_lean) * sin_y * 0.20
+    _draw_sphere_lowpoly(
+        head_cx,
+        cy,
+        head_cz,
+        radius=max(0.06, radius),
+        base_color=(0.92, 0.87, 0.82),
+        lat_steps=7,
+        lon_steps=10,
+    )
 
 
 def _color_from_state(fear: float, alive: bool) -> Tuple[float, float, float]:
@@ -649,7 +800,9 @@ def _draw_pyramid_roof(
         ny = uz*vx - ux*vz
         nz = ux*vy - uy*vx
         nlen = math.sqrt(nx*nx + ny*ny + nz*nz) + 1e-9
+        nx /= nlen
         ny /= nlen
+        nz /= nlen
 
         face_col = base_color
         if top_color:
@@ -660,7 +813,7 @@ def _draw_pyramid_roof(
                 base_color[2]*(1-mix_t) + top_color[2]*mix_t,
             )
 
-        lit = _fake_lighting_color(face_col, normal_y=ny)
+        lit = _fake_lighting_color(face_col, normal_x=nx, normal_y=ny, normal_z=nz)
         glColor3f(*lit)
 
         glVertex3f(*a)
@@ -808,6 +961,253 @@ def _draw_fire(inst: StaticMeshInstance, global_time: float):
     )
 
 
+def _draw_road(inst: StaticMeshInstance):
+    """
+    Плоская дорога-полоса с боковой кромкой.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    half_len = max(0.4, abs(inst.scale.x))
+    half_w = max(0.25, abs(inst.scale.z))
+
+    _draw_oriented_box(
+        cx=x, cy=y + 0.02, cz=z,
+        hx=half_len, hy=0.02, hz=half_w,
+        yaw_rad=yaw,
+        base_color=(0.24, 0.22, 0.20),
+        pitch_forward=0.0,
+    )
+    # Светлая центральная полоса для читаемости.
+    _draw_oriented_box(
+        cx=x, cy=y + 0.028, cz=z,
+        hx=half_len * 0.98, hy=0.005, hz=half_w * 0.14,
+        yaw_rad=yaw,
+        base_color=(0.72, 0.68, 0.56),
+        pitch_forward=0.0,
+    )
+
+
+def _draw_rock(inst: StaticMeshInstance):
+    """
+    Камень: несколько наложенных "глыб".
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    hx = max(0.2, abs(inst.scale.x) * 0.45)
+    hy = max(0.2, abs(inst.scale.y) * 0.40)
+    hz = max(0.2, abs(inst.scale.z) * 0.45)
+
+    _draw_oriented_box(
+        cx=x,
+        cy=y + hy * 0.5,
+        cz=z,
+        hx=hx,
+        hy=hy,
+        hz=hz,
+        yaw_rad=yaw,
+        base_color=(0.42, 0.44, 0.47),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x + 0.10 * hx,
+        cy=y + hy * 1.1,
+        cz=z - 0.08 * hz,
+        hx=hx * 0.62,
+        hy=hy * 0.58,
+        hz=hz * 0.62,
+        yaw_rad=yaw + 0.7,
+        base_color=(0.50, 0.52, 0.56),
+        pitch_forward=0.0,
+    )
+
+
+def _draw_log(inst: StaticMeshInstance):
+    """
+    Бревно.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    hx = max(0.4, abs(inst.scale.x) * 0.5)
+    hy = max(0.12, abs(inst.scale.y) * 0.45)
+    hz = max(0.16, abs(inst.scale.z) * 0.38)
+
+    _draw_oriented_box(
+        cx=x,
+        cy=y + hy + 0.01,
+        cz=z,
+        hx=hx,
+        hy=hy,
+        hz=hz,
+        yaw_rad=yaw,
+        base_color=(0.42, 0.26, 0.15),
+        pitch_forward=0.0,
+    )
+
+
+def _draw_tower(inst: StaticMeshInstance):
+    """
+    Смотровая башня.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    base_hx = max(0.6, abs(inst.scale.x) * 0.38)
+    base_hz = max(0.6, abs(inst.scale.z) * 0.38)
+    tower_h = max(2.5, abs(inst.scale.y))
+
+    _draw_oriented_box(
+        cx=x, cy=y + tower_h * 0.45, cz=z,
+        hx=base_hx, hy=tower_h * 0.45, hz=base_hz,
+        yaw_rad=yaw,
+        base_color=(0.48, 0.42, 0.34),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x, cy=y + tower_h * 0.90, cz=z,
+        hx=base_hx * 1.15, hy=tower_h * 0.08, hz=base_hz * 1.15,
+        yaw_rad=yaw,
+        base_color=(0.35, 0.30, 0.26),
+        pitch_forward=0.0,
+    )
+    _draw_pyramid_roof(
+        cx=x, cy=y + tower_h * 0.98, cz=z,
+        sx=base_hx * 1.25, sy=tower_h * 0.30, sz=base_hz * 1.25,
+        yaw_rad=yaw,
+        base_color=(0.28, 0.14, 0.10),
+        top_color=(0.56, 0.24, 0.17),
+    )
+
+
+def _draw_well(inst: StaticMeshInstance):
+    """
+    Колодец: каменное основание + вода + крыша.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    base_r = max(0.45, abs(inst.scale.x) * 0.42)
+    h = max(0.8, abs(inst.scale.y))
+
+    _draw_oriented_box(
+        cx=x, cy=y + h * 0.28, cz=z,
+        hx=base_r, hy=h * 0.28, hz=base_r,
+        yaw_rad=yaw,
+        base_color=(0.55, 0.56, 0.60),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x, cy=y + h * 0.40, cz=z,
+        hx=base_r * 0.76, hy=h * 0.03, hz=base_r * 0.76,
+        yaw_rad=yaw,
+        base_color=(0.15, 0.42, 0.72),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x - base_r * 0.62, cy=y + h * 0.80, cz=z,
+        hx=0.08, hy=h * 0.35, hz=0.08,
+        yaw_rad=yaw,
+        base_color=(0.42, 0.30, 0.20),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x + base_r * 0.62, cy=y + h * 0.80, cz=z,
+        hx=0.08, hy=h * 0.35, hz=0.08,
+        yaw_rad=yaw,
+        base_color=(0.42, 0.30, 0.20),
+        pitch_forward=0.0,
+    )
+    _draw_pyramid_roof(
+        cx=x, cy=y + h * 1.28, cz=z,
+        sx=base_r * 1.25, sy=h * 0.42, sz=base_r * 1.25,
+        yaw_rad=yaw,
+        base_color=(0.33, 0.16, 0.11),
+        top_color=(0.62, 0.27, 0.17),
+    )
+
+
+def _draw_shrine(inst: StaticMeshInstance, global_time: float):
+    """
+    Святилище: постамент + крыша + мягкое свечение.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    sx = max(0.8, abs(inst.scale.x) * 0.52)
+    sy = max(0.8, abs(inst.scale.y))
+    sz = max(0.8, abs(inst.scale.z) * 0.52)
+
+    _draw_oriented_box(
+        cx=x, cy=y + sy * 0.22, cz=z,
+        hx=sx, hy=sy * 0.22, hz=sz,
+        yaw_rad=yaw,
+        base_color=(0.56, 0.55, 0.52),
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=x, cy=y + sy * 0.55, cz=z,
+        hx=sx * 0.52, hy=sy * 0.25, hz=sz * 0.52,
+        yaw_rad=yaw,
+        base_color=(0.78, 0.76, 0.72),
+        pitch_forward=0.0,
+    )
+    _draw_pyramid_roof(
+        cx=x, cy=y + sy * 0.82, cz=z,
+        sx=sx * 1.08, sy=sy * 0.52, sz=sz * 1.08,
+        yaw_rad=yaw,
+        base_color=(0.22, 0.26, 0.35),
+        top_color=(0.36, 0.58, 0.92),
+    )
+    pulse = 0.5 + 0.5 * math.sin(global_time * 2.5 + x * 0.5 + z * 0.5)
+    _draw_ring(x, z, radius=max(sx, sz) * (0.9 + pulse * 0.35), y=y + 0.03,
+               rgb=(0.35, 0.75, 1.0), width=1.6, alpha=0.26 + pulse * 0.24)
+
+
+def _draw_lantern(inst: StaticMeshInstance, global_time: float):
+    """
+    Фонарь: стойка + лампа + световое кольцо.
+    """
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    pole_h = max(1.2, abs(inst.scale.y))
+    pole_r = max(0.05, abs(inst.scale.x) * 0.12)
+
+    _draw_oriented_box(
+        cx=x, cy=y + pole_h * 0.45, cz=z,
+        hx=pole_r, hy=pole_h * 0.45, hz=pole_r,
+        yaw_rad=yaw,
+        base_color=(0.25, 0.23, 0.20),
+        pitch_forward=0.0,
+    )
+
+    lamp_y = y + pole_h * 0.92
+    _draw_oriented_box(
+        cx=x, cy=lamp_y, cz=z,
+        hx=pole_r * 2.2, hy=pole_r * 2.2, hz=pole_r * 2.2,
+        yaw_rad=yaw,
+        base_color=(1.0, 0.85, 0.50),
+        pitch_forward=0.0,
+    )
+    glow = 0.5 + 0.5 * math.sin(global_time * 5.5 + x + z)
+    _draw_ring(x, z, radius=0.75 + glow * 0.30, y=y + 0.035,
+               rgb=(1.0, 0.85, 0.55), width=1.2, alpha=0.14 + 0.18 * glow)
+
+
+def _draw_wall(inst: StaticMeshInstance):
+    x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
+    yaw = inst.yaw
+    hx = max(0.6, abs(inst.scale.x))
+    hy = max(0.3, abs(inst.scale.y) * 0.45)
+    hz = max(0.16, abs(inst.scale.z) * 0.35)
+    _draw_oriented_box(
+        cx=x,
+        cy=y + hy,
+        cz=z,
+        hx=hx,
+        hy=hy,
+        hz=hz,
+        yaw_rad=yaw,
+        base_color=(0.46, 0.47, 0.50),
+        pitch_forward=0.0,
+    )
+
+
 def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
     if inst.kind == "house":
         _draw_house(inst)
@@ -817,172 +1217,181 @@ def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
         _draw_lake(inst)
     elif inst.kind == "fire":
         _draw_fire(inst, global_time)
+    elif inst.kind == "road":
+        _draw_road(inst)
+    elif inst.kind == "rock":
+        _draw_rock(inst)
+    elif inst.kind == "log":
+        _draw_log(inst)
+    elif inst.kind == "tower":
+        _draw_tower(inst)
+    elif inst.kind == "well":
+        _draw_well(inst)
+    elif inst.kind == "shrine":
+        _draw_shrine(inst, global_time)
+    elif inst.kind == "lantern":
+        _draw_lantern(inst, global_time)
+    elif inst.kind == "wall":
+        _draw_wall(inst)
+    elif inst.kind == "zone_safe":
+        rr = 0.5 * (abs(inst.scale.x) + abs(inst.scale.z))
+        _draw_disc_zone(inst.pos.x, inst.pos.z, radius=max(0.5, rr), kind="safe", y=0.021)
+    elif inst.kind == "zone_hazard":
+        rr = 0.5 * (abs(inst.scale.x) + abs(inst.scale.z))
+        _draw_disc_zone(inst.pos.x, inst.pos.z, radius=max(0.5, rr), kind="hazard", y=0.021)
 
 
 # --- отрисовка агента ------------------------------------------------
 
 def draw_agent_humanoid(agent: AgentEntity, t: float):
-    yaw = agent.transform.yaw
-    fear = agent.anim.fear
-    hp = agent.anim.health
-    alive = agent.anim.alive
-    phase = agent.anim.walk_phase
+    yaw = float(agent.transform.yaw)
+    fear = clamp(float(agent.anim.fear), 0.0, 1.0)
+    hp = clamp(float(agent.anim.health), 0.0, 100.0)
+    alive = bool(agent.anim.alive)
+    phase = float(agent.anim.walk_phase)
 
-    # сутулость / "я ранен"
-    crouch = 0.0
-    if hp < 50.0:
-        crouch += 0.2
-    if fear > 0.7:
-        crouch += 0.1
+    px = float(agent.transform.pos.x)
+    pz = float(agent.transform.pos.z)
 
-    # наклон корпуса вперёд/вниз (паника или безжизненность)
-    fwd_lean = 0.0
-    if fear > 0.6:
-        fwd_lean += 0.2
-    if hp < 30.0:
-        fwd_lean += 0.3
+    hp_ratio = hp / 100.0
+    life_t = 1.0 if alive else 0.0
+
+    # Чем хуже состояние, тем более согнутая и «тяжёлая» поза.
+    crouch = (1.0 - hp_ratio) * 0.20 + clamp((fear - 0.55) * 0.22, 0.0, 0.12)
+    fwd_lean = clamp((fear - 0.45) * 0.50, 0.0, 0.30) + clamp((0.65 - hp_ratio) * 0.28, 0.0, 0.20)
     if not alive:
-        fwd_lean = 0.8
-        crouch = 0.4
+        crouch = 0.40
+        fwd_lean = 0.72
 
-    base_y_offset = 0.0
+    base_y_offset = -0.10 if not alive else 0.0
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+
+    def _world_pos(lx: float, ly: float, lz: float) -> Tuple[float, float, float]:
+        wx = px + lx * cos_y - lz * sin_y
+        wz = pz + lx * sin_y + lz * cos_y
+        wy = base_y_offset + ly
+        return wx, wy, wz
+
+    def _part_box(
+        lx: float, ly: float, lz: float,
+        hx: float, hy: float, hz: float,
+        color: Tuple[float, float, float],
+        pitch: float = 0.0,
+    ):
+        wx, wy, wz = _world_pos(lx, ly, lz)
+        _draw_oriented_box(
+            cx=wx, cy=wy, cz=wz,
+            hx=hx, hy=hy, hz=hz,
+            yaw_rad=yaw,
+            base_color=color,
+            pitch_forward=pitch,
+        )
+
+    def _joint(
+        lx: float, ly: float, lz: float,
+        r: float,
+        color: Tuple[float, float, float],
+        lat: int = 5,
+        lon: int = 8,
+    ):
+        wx, wy, wz = _world_pos(lx, ly, lz)
+        _draw_sphere_lowpoly(wx, wy, wz, radius=max(0.03, r), base_color=color, lat_steps=lat, lon_steps=lon)
+
+    body_core = _color_from_state(fear, alive)
+    cloth_main = _mix_rgb(body_core, (0.10, 0.18, 0.36), 0.45)
+    cloth_dark = _mix_rgb(cloth_main, (0.08, 0.09, 0.12), 0.55)
+    skin = _mix_rgb((0.96, 0.85, 0.74), (0.78, 0.63, 0.54), fear * 0.55)
     if not alive:
-        base_y_offset = -0.1
+        skin = (0.60, 0.61, 0.64)
 
-    body_col = _color_from_state(fear, alive)
+    # -------------------------------------------------------------
+    # Туловище: таз + грудь + шея + голова (округлая)
+    # -------------------------------------------------------------
+    pelvis_y = 0.90 - crouch
+    chest_y = 1.46 - crouch * 0.70
+    neck_y = 1.98 - crouch * 0.55
+    head_y = 2.27 - crouch * 0.50
 
-    leg_amp = 0.30
-    arm_amp = 0.30
-    leg_sw = math.sin(phase) * leg_amp
-    arm_sw = math.sin(phase + math.pi) * arm_amp
+    _part_box(0.0, pelvis_y, 0.01, 0.30, 0.20, 0.20, cloth_dark, pitch=fwd_lean * 0.35)
+    _part_box(0.0, chest_y, 0.0, 0.34, 0.36, 0.21, cloth_main, pitch=fwd_lean)
+    _part_box(0.0, neck_y, 0.0, 0.09, 0.10, 0.09, skin, pitch=fwd_lean * 0.5)
 
-    px = agent.transform.pos.x
-    pz = agent.transform.pos.z
+    # Плечевые шарниры добавляют "человечность" силуэта.
+    _joint(-0.36, chest_y + 0.18, 0.0, 0.09, cloth_main, lat=5, lon=8)
+    _joint(+0.36, chest_y + 0.18, 0.0, 0.09, cloth_main, lat=5, lon=8)
 
-    # ТОРСО
-    torso_mid_y  = 1.2 - crouch + base_y_offset
-    torso_half_w = 0.45
-    torso_half_d = 0.25
-    torso_half_h = 0.45
-    _draw_oriented_box(
-        cx=px,
-        cy=torso_mid_y,
-        cz=pz,
-        hx=torso_half_w,
-        hy=torso_half_h,
-        hz=torso_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=fwd_lean,
+    head_shift = math.sin(fwd_lean) * 0.16
+    head_wx, head_wy, head_wz = _world_pos(head_shift, head_y, 0.03)
+    _draw_sphere_lowpoly(
+        head_wx, head_wy, head_wz,
+        radius=0.24,
+        base_color=skin,
+        lat_steps=8,
+        lon_steps=12,
+    )
+    # Волосы/шапка (верхняя полусфера потемнее).
+    _draw_sphere_lowpoly(
+        head_wx, head_wy + 0.07, head_wz - 0.01,
+        radius=0.16,
+        base_color=(0.18, 0.16, 0.14) if alive else (0.42, 0.42, 0.45),
+        lat_steps=6,
+        lon_steps=10,
     )
 
-    # ГОЛОВА
-    head_y = torso_mid_y + torso_half_h + 0.35 - crouch
-    _draw_head_disc(
-        cx=px,
-        cy=head_y,
-        cz=pz,
-        yaw_rad=yaw,
-        radius=0.35,
-        forward_lean=fwd_lean,
-    )
+    # -------------------------------------------------------------
+    # Анимация шага: руки и ноги
+    # -------------------------------------------------------------
+    walk_amp = (0.25 + 0.12 * life_t) * (0.40 + 0.60 * hp_ratio)
+    leg_swing = math.sin(phase) * walk_amp
+    arm_swing = math.sin(phase + math.pi) * (walk_amp * 0.95)
+    knee_lift = abs(math.sin(phase)) * 0.07
+    elbow_fold = abs(math.sin(phase + math.pi * 0.5)) * 0.06
 
-    # НОГИ
-    hip_y_mid   = 0.6 - crouch + base_y_offset
-    hip_half_h  = 0.35
-    hip_half_w  = 0.22
-    hip_half_d  = 0.22
+    # Ноги
+    hip_x = 0.19
+    thigh_hy = 0.24
+    shin_hy = 0.22
+    boot_hy = 0.07
 
-    shin_y_mid  = 0.2 - crouch + base_y_offset
-    shin_half_h = 0.2
-    shin_half_w = 0.18
-    shin_half_d = 0.18
+    left_thigh_z = leg_swing * 0.55
+    right_thigh_z = -leg_swing * 0.55
 
-    leg_gap_x   = 0.25
+    _part_box(-hip_x, 0.62 - crouch, left_thigh_z, 0.12, thigh_hy, 0.12, cloth_dark, pitch=+leg_swing * 1.25)
+    _part_box(+hip_x, 0.62 - crouch, right_thigh_z, 0.12, thigh_hy, 0.12, cloth_dark, pitch=-leg_swing * 1.25)
 
-    # левая
-    _draw_oriented_box(
-        cx=px - leg_gap_x,
-        cy=hip_y_mid,
-        cz=pz + leg_sw,
-        hx=hip_half_w,
-        hy=hip_half_h,
-        hz=hip_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
-    _draw_oriented_box(
-        cx=px - leg_gap_x,
-        cy=shin_y_mid,
-        cz=pz + leg_sw,
-        hx=shin_half_w,
-        hy=shin_half_h,
-        hz=shin_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
+    _part_box(-hip_x, 0.23 - crouch + knee_lift, left_thigh_z * 1.18, 0.10, shin_hy, 0.10, cloth_main, pitch=-leg_swing * 0.60)
+    _part_box(+hip_x, 0.23 - crouch + (0.07 - knee_lift), right_thigh_z * 1.18, 0.10, shin_hy, 0.10, cloth_main, pitch=+leg_swing * 0.60)
 
-    # правая
-    _draw_oriented_box(
-        cx=px + leg_gap_x,
-        cy=hip_y_mid,
-        cz=pz - leg_sw,
-        hx=hip_half_w,
-        hy=hip_half_h,
-        hz=hip_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
-    _draw_oriented_box(
-        cx=px + leg_gap_x,
-        cy=shin_y_mid,
-        cz=pz - leg_sw,
-        hx=shin_half_w,
-        hy=shin_half_h,
-        hz=shin_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
+    _joint(-hip_x, 0.37 - crouch + knee_lift * 0.5, left_thigh_z * 0.9, 0.06, cloth_dark, lat=4, lon=7)
+    _joint(+hip_x, 0.37 - crouch + (0.035 - knee_lift * 0.5), right_thigh_z * 0.9, 0.06, cloth_dark, lat=4, lon=7)
 
-    # РУКИ
-    shoulder_y_mid = torso_mid_y + 0.15 - crouch
-    arm_half_h     = 0.25
-    arm_half_w     = 0.15
-    arm_half_d     = 0.15
-    arm_offset_x   = torso_half_w + arm_half_w + 0.05
+    _part_box(-hip_x, 0.05 - crouch, left_thigh_z * 1.30, 0.13, boot_hy, 0.20, (0.12, 0.12, 0.14), pitch=0.0)
+    _part_box(+hip_x, 0.05 - crouch, right_thigh_z * 1.30, 0.13, boot_hy, 0.20, (0.12, 0.12, 0.14), pitch=0.0)
 
-    # левая
-    _draw_oriented_box(
-        cx=px - arm_offset_x,
-        cy=shoulder_y_mid,
-        cz=pz + arm_sw,
-        hx=arm_half_w,
-        hy=arm_half_h,
-        hz=arm_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
-    # правая
-    _draw_oriented_box(
-        cx=px + arm_offset_x,
-        cy=shoulder_y_mid,
-        cz=pz - arm_sw,
-        hx=arm_half_w,
-        hy=arm_half_h,
-        hz=arm_half_d,
-        yaw_rad=yaw,
-        base_color=body_col,
-        pitch_forward=0.0,
-    )
+    # Руки
+    shoulder_y = chest_y + 0.08
+    upper_arm_h = 0.21
+    fore_arm_h = 0.19
+    arm_x = 0.46
+
+    _part_box(-arm_x, shoulder_y, arm_swing * 0.45, 0.09, upper_arm_h, 0.10, cloth_dark, pitch=-arm_swing * 1.15)
+    _part_box(+arm_x, shoulder_y, -arm_swing * 0.45, 0.09, upper_arm_h, 0.10, cloth_dark, pitch=+arm_swing * 1.15)
+
+    _part_box(-arm_x, shoulder_y - 0.29, arm_swing * 0.88 - elbow_fold, 0.08, fore_arm_h, 0.09, cloth_main, pitch=-arm_swing * 0.70)
+    _part_box(+arm_x, shoulder_y - 0.29, -arm_swing * 0.88 + elbow_fold, 0.08, fore_arm_h, 0.09, cloth_main, pitch=+arm_swing * 0.70)
+
+    _joint(-arm_x, shoulder_y - 0.52, arm_swing * 1.02 - elbow_fold, 0.06, skin, lat=4, lon=7)
+    _joint(+arm_x, shoulder_y - 0.52, -arm_swing * 1.02 + elbow_fold, 0.06, skin, lat=4, lon=7)
+
+    # Лёгкая "динамика дыхания" для живого агента.
+    if alive:
+        breath = 0.01 * math.sin(t * 2.4 + phase * 0.5)
+        _part_box(0.0, chest_y + breath, -0.06, 0.20, 0.03, 0.05, _mix_rgb(cloth_main, (0.85, 0.85, 0.88), 0.25), pitch=fwd_lean * 0.6)
 
     # КОЛЬЦО ВЫБОРА (с пульсом)
     if agent.selected:
-        base_r = 1.15
+        base_r = 1.10
         if SELECTED_PULSE:
             pulse = (math.sin(t * 4.0) * 0.5 + 0.5)  # 0..1
             r = base_r + pulse * 0.25
@@ -1140,6 +1549,8 @@ class MiniMatrixEngine:
         self.numbers: List[DamageNumber] = []
 
         self._time_accum: float = 0.0
+        # Стартовая инициализация дневного света для первого кадра.
+        self._update_sun_state(dt=0.0)
 
         # камера (для HUD LOD)
         self._cam_pos: Tuple[float, float, float] = (0.0, 20.0, -20.0)
@@ -1639,6 +2050,51 @@ class MiniMatrixEngine:
                 nums_alive.append(dn)
         self.numbers = nums_alive
 
+    def _update_sun_state(self, dt: float):
+        """
+        Обновляем дневной цикл:
+        - направление солнца
+        - оттенок света
+        - интенсивность ambient/diffuse
+        - цвет неба.
+        """
+        if not SUN_ENABLED:
+            return
+
+        # Параметры читаются рендер-хелперами напрямую.
+        global _SUN_DIR, _SUN_COLOR, _SUN_AMBIENT, _SUN_DIFFUSE, _SKY_COLOR
+
+        cycle_sec = max(30.0, float(SUN_CYCLE_SEC))
+        day_t = (self._time_accum / cycle_sec) % 1.0
+        az = day_t * (2.0 * math.pi)
+
+        # Высота солнца в дневном диапазоне (без ночи).
+        elev_span = SUN_MAX_ELEV_DEG - SUN_MIN_ELEV_DEG
+        elev_deg = SUN_MIN_ELEV_DEG + elev_span * (0.5 + 0.5 * math.sin(az))
+        elev = math.radians(elev_deg)
+
+        sy = max(0.18, math.sin(elev))
+        flat = max(0.01, math.cos(elev))
+        sx = math.cos(az) * flat
+        sz = math.sin(az) * flat
+        nlen = math.sqrt(sx * sx + sy * sy + sz * sz) + 1e-9
+        _SUN_DIR = (sx / nlen, sy / nlen, sz / nlen)
+
+        # Ниже солнце -> теплее оттенок.
+        warm_t = clamp(1.0 - sy, 0.0, 1.0)
+        _SUN_COLOR = (
+            1.0,
+            clamp(0.98 - 0.12 * warm_t, 0.0, 1.0),
+            clamp(0.94 - 0.28 * warm_t, 0.0, 1.0),
+        )
+
+        _SUN_AMBIENT = clamp(0.28 + 0.16 * sy, 0.20, 0.52)
+        _SUN_DIFFUSE = clamp(0.58 + 0.34 * sy, 0.45, 0.96)
+
+        # Небо: больше синего в верхней фазе солнца и мягкая теплота в нижней.
+        sky_mix = clamp((sy - 0.18) / 0.82, 0.0, 1.0)
+        _SKY_COLOR = _mix_rgb((0.98, 0.76, 0.58), (0.50, 0.72, 0.97), sky_mix)
+
     def _spawn_ring(self, x: float, z: float, y: float = 0.03,
                     r0: float = VFX_RING_R0, r1: float = VFX_RING_R1,
                     color: Tuple[float, float, float, float] = (1.0, 1.0, 0.2, 0.9),
@@ -1796,15 +2252,17 @@ class MiniMatrixEngine:
         Кадровое обновление клиента.
         Порядок:
           1) увеличиваем внутренний таймер (для анимации огня и т.д.)
-          2) плавно тянем позы к серверным координатам (dead-reckoning + lerp)
-          3) разводим сущности визуально (антислипание)
-          4) плавно поворачиваем модели и обновляем walk_phase
-          5) обновляем VFX
+          2) обновляем дневной цикл солнца
+          3) плавно тянем позы к серверным координатам (dead-reckoning + lerp)
+          4) разводим сущности визуально (антислипание)
+          5) плавно поворачиваем модели и обновляем walk_phase
+          6) обновляем VFX
         """
         if dt <= 0.0:
             return
 
         self._time_accum += dt
+        self._update_sun_state(dt)
 
         self._smooth_positions_towards_targets(dt)
         self._apply_social_avoidance_agents()
@@ -1835,7 +2293,7 @@ class MiniMatrixEngine:
 
         glViewport(0, 0, int(w), int(h))
 
-        glClearColor(0.03, 0.03, 0.05, 1.0)
+        glClearColor(_SKY_COLOR[0], _SKY_COLOR[1], _SKY_COLOR[2], 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         glEnable(GL_DEPTH_TEST)
@@ -1872,6 +2330,62 @@ class MiniMatrixEngine:
             sign = "+" if val > 0 else ""
             text = f"{sign}{val:.0f}"
             self._draw_text3d(text, dn.x, dn.y(), dn.z, big=True, alpha=alpha, rgb=(dn.color[0], dn.color[1], dn.color[2]))
+
+    def _draw_sun(self):
+        """
+        Рисуем солнце в небе (сфера + мягкая корона + короткие лучи).
+        """
+        if not SUN_ENABLED:
+            return
+
+        world_w = max(1.0, float(self.world.width))
+        world_h = max(1.0, float(self.world.height))
+        center_x = world_w * 0.5
+        center_z = world_h * 0.5
+
+        dome_r = max(world_w, world_h) * 0.92 + 40.0
+        sx, sy, sz = _SUN_DIR
+        sun_x = center_x + sx * dome_r
+        sun_y = SUN_BASE_HEIGHT + sy * (dome_r * 0.75)
+        sun_z = center_z + sz * dome_r
+
+        sun_radius = max(2.8, max(world_w, world_h) * 0.040)
+        sun_core = _mix_rgb(_SUN_COLOR, (1.0, 0.98, 0.86), 0.45)
+        _draw_sphere_lowpoly(
+            sun_x, sun_y, sun_z,
+            radius=sun_radius,
+            base_color=sun_core,
+            lat_steps=8,
+            lon_steps=12,
+        )
+
+        # Полупрозрачный ореол.
+        halo_r = sun_radius * 2.6
+        glColor4f(_SUN_COLOR[0], _SUN_COLOR[1], _SUN_COLOR[2], 0.16)
+        glBegin(GL_TRIANGLE_FAN)
+        glVertex3f(sun_x, sun_y, sun_z)
+        steps = 36
+        for i in range(steps + 1):
+            a = (2.0 * math.pi) * (i / steps)
+            glVertex3f(
+                sun_x + math.cos(a) * halo_r,
+                sun_y,
+                sun_z + math.sin(a) * halo_r,
+            )
+        glEnd()
+
+        # Короткие лучи для читаемого силуэта.
+        glColor4f(_SUN_COLOR[0], _SUN_COLOR[1], _SUN_COLOR[2], 0.34)
+        glLineWidth(1.4)
+        glBegin(GL_LINES)
+        rays = 12
+        for i in range(rays):
+            a = (2.0 * math.pi) * (i / rays)
+            in_r = sun_radius * 1.35
+            out_r = sun_radius * 2.15
+            glVertex3f(sun_x + math.cos(a) * in_r, sun_y, sun_z + math.sin(a) * in_r)
+            glVertex3f(sun_x + math.cos(a) * out_r, sun_y, sun_z + math.sin(a) * out_r)
+        glEnd()
 
     def _draw_agent_fov(self, agent: AgentEntity):
         if not (SHOW_FOV_CONES and agent.selected and agent.anim.alive):
@@ -1952,6 +2466,7 @@ class MiniMatrixEngine:
     def render_opengl(self):
         """
         Рисуем мир:
+          - солнце (ядро + ореол + лучи)
           - пол + сетка
           - статика окружения (лес, дома, костёр, озеро)
           - зоны (safe / hazard) цветными дисками
@@ -1961,6 +2476,8 @@ class MiniMatrixEngine:
           - звери + HUD
           - VFX (вспышки) + числа урона/хила
         """
+        self._draw_sun()
+
         # пол/сетка
         _draw_floor_grid(self.world.width, self.world.height)
 
