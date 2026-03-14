@@ -38,8 +38,6 @@ def export_brain(agent_id: str, brain, skills: Dict[str, Any]) -> str:
     # в артефактах side-trainer наравне с остальными трекерами.
     skills_out = dict(skills or {})
     skills_out.update(_extract_taming_meta(brain))
-    meta = {"agent_id": agent_id, "skills": skills_out, "version": "csen-1"}
-    path = f"brains/{agent_id}-latest.npz"
-    # save_brain поддерживает meta и опциональный путь
-    save_brain(brain, path, meta=meta)
-    return path
+    setattr(brain, "trainer_side_meta", {"agent_id": agent_id, "skills": skills_out, "version": "csen-1"})
+    save_brain(brain)
+    return f"brains/{agent_id}.json"

@@ -392,6 +392,7 @@ class ServerMessage(BaseModel):
       - "ack"         : подтверждение, что команда клиента принята
       - "error"       : ошибка обработки клиентской команды
       - "world_state" : полное состояние мира на данный тик
+      - "event"       : отдельное мировое событие вне полного снапшота
       - "pong"        : ответ на ping клиента
 
     data:
@@ -405,7 +406,7 @@ class ServerMessage(BaseModel):
         (чтобы UI мог просто посмотреть msg.tick, не лезя в data)
     """
 
-    type: Literal["ack", "error", "world_state", "pong"] = Field(
+    type: Literal["ack", "error", "world_state", "event", "pong"] = Field(
         ...,
         description="Тип сообщения от сервера",
     )

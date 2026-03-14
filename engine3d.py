@@ -74,6 +74,16 @@ SHOW_FOV_CONES      = True      # конус обзора у выбранног�
 SHOW_DAMAGE_NUMBERS = True      # всплывающие числа урона/лечения
 SELECTED_PULSE      = True      # пульсирующее кольцо у выбранных сущностей
 MAX_HUD_DISTANCE    = 80.0      # LOD: дальше этого HUD не рисуем (кроме выбранного)
+MAX_ENTITY_RENDER_DISTANCE = 120.0  # дальше этого сущности вообще не рисуем
+MAX_AGENT_DETAIL_DISTANCE = 78.0    # после этого агенты переходят в простой LOD
+MAX_ANIMAL_DETAIL_DISTANCE = 72.0   # после этого звери переходят в простой LOD
+MAX_STATIC_DISTANCE = 135.0         # дальность статических мешей
+MAX_ZONE_DISTANCE = 110.0           # дальность цветных зон
+MAX_GOAL_RING_DISTANCE = 82.0       # дальность колец целей
+MAX_DIRECTION_ARROW_DISTANCE = 52.0 # дальность стрелок направления
+MAX_TARGET_LINE_DISTANCE = 88.0     # дальность линий целей
+MAX_VFX_DISTANCE = 95.0             # дальность VFX и damage numbers
+SOCIAL_AVOIDANCE_CELL = 2.25        # размер ячейки spatial hash для разведения
 FOV_DEG             = 80.0      # базовая ширина FOV-конуса
 FOV_RANGE           = 7.0       # базовая дальность FOV-конуса
 
@@ -412,12 +422,22 @@ def _fake_lighting_color(
     return (r, g, b)
 
 
-def _draw_floor_grid(world_w: float, world_h: float):
+def _draw_floor_grid(
+    world_w: float,
+    world_h: float,
+    cam_pos: Optional[Tuple[float, float, float]] = None,
+):
     """
     Слой земли + сетка.
     Сделано чуть "богаче", чтобы карта лучше читалась на больших масштабах.
     """
     ground_boost = clamp(_SUN_AMBIENT + 0.40 * _SUN_DIFFUSE, 0.25, 1.10)
+    detail_pressure = 0.0
+    if cam_pos is not None:
+        cx, cy, cz = cam_pos
+        center_x = world_w * 0.5
+        center_z = world_h * 0.5
+        detail_pressure = max(abs(cy) * 1.25, math.hypot(center_x - cx, center_z - cz))
 
     # Базовая подложка.
     c0 = _fake_lighting_color((0.12 * ground_boost, 0.17 * ground_boost, 0.14 * ground_boost), 0.0, 1.0, 0.0)
@@ -430,7 +450,12 @@ def _draw_floor_grid(world_w: float, world_h: float):
     glEnd()
 
     # Продольные "полосы" цвета по Z, чтобы плоскость не была плоской по тону.
-    bands = 18
+    if detail_pressure >= 140.0:
+        bands = 8
+    elif detail_pressure >= 80.0:
+        bands = 12
+    else:
+        bands = 18
     for i in range(bands):
         t0 = i / float(bands)
         t1 = (i + 1) / float(bands)
@@ -449,26 +474,36 @@ def _draw_floor_grid(world_w: float, world_h: float):
         glVertex3f(0.0,      0.0002, z1)
         glEnd()
 
+    _draw_ground_patches(world_w, world_h, detail_pressure)
+
     # Минорная сетка.
-    minor_step = max(5.0, min(world_w, world_h) / 22.0)
-    grid_minor = _fake_lighting_color((0.23, 0.25, 0.24), 0.0, 1.0, 0.0)
-    glColor3f(*grid_minor)
-    glLineWidth(1.0)
-    glBegin(GL_LINES)
-    x = 0.0
-    while x <= world_w + 0.001:
-        glVertex3f(x, 0.001, 0.0)
-        glVertex3f(x, 0.001, world_h)
-        x += minor_step
-    z = 0.0
-    while z <= world_h + 0.001:
-        glVertex3f(0.0,      0.001, z)
-        glVertex3f(world_w,  0.001, z)
-        z += minor_step
-    glEnd()
+    base_step = max(5.0, min(world_w, world_h) / 22.0)
+    if detail_pressure >= 140.0:
+        minor_step = base_step * 4.0
+    elif detail_pressure >= 80.0:
+        minor_step = base_step * 2.0
+    else:
+        minor_step = base_step
+    draw_minor = detail_pressure < 170.0
+    if draw_minor:
+        grid_minor = _fake_lighting_color((0.23, 0.25, 0.24), 0.0, 1.0, 0.0)
+        glColor3f(*grid_minor)
+        glLineWidth(1.0)
+        glBegin(GL_LINES)
+        x = 0.0
+        while x <= world_w + 0.001:
+            glVertex3f(x, 0.001, 0.0)
+            glVertex3f(x, 0.001, world_h)
+            x += minor_step
+        z = 0.0
+        while z <= world_h + 0.001:
+            glVertex3f(0.0,      0.001, z)
+            glVertex3f(world_w,  0.001, z)
+            z += minor_step
+        glEnd()
 
     # Мажорная сетка (толще и светлее) каждые 4 шага.
-    major_step = minor_step * 4.0
+    major_step = base_step * (8.0 if detail_pressure >= 140.0 else 4.0)
     grid_major = _fake_lighting_color((0.32, 0.35, 0.33), 0.0, 1.0, 0.0)
     glColor3f(*grid_major)
     glLineWidth(1.4)
@@ -613,6 +648,172 @@ def _mix_rgb(
         a[1] * (1.0 - tt) + b[1] * tt,
         a[2] * (1.0 - tt) + b[2] * tt,
     )
+
+
+def _hash01(x: float, y: float, z: float = 0.0) -> float:
+    v = math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453123
+    return v - math.floor(v)
+
+
+def _vary_rgb(
+    base: Tuple[float, float, float],
+    seed_a: float,
+    seed_b: float = 0.0,
+    amount: float = 0.08,
+) -> Tuple[float, float, float]:
+    r = clamp(base[0] + (_hash01(seed_a, seed_b, 1.0) - 0.5) * 2.0 * amount, 0.0, 1.0)
+    g = clamp(base[1] + (_hash01(seed_a, seed_b, 2.0) - 0.5) * 2.0 * amount, 0.0, 1.0)
+    b = clamp(base[2] + (_hash01(seed_a, seed_b, 3.0) - 0.5) * 2.0 * amount, 0.0, 1.0)
+    return (r, g, b)
+
+
+def _yaw_world_offset(cx: float, cz: float, yaw_rad: float, lx: float, lz: float) -> Tuple[float, float]:
+    cos_y = math.cos(yaw_rad)
+    sin_y = math.sin(yaw_rad)
+    return cx + lx * cos_y - lz * sin_y, cz + lx * sin_y + lz * cos_y
+
+
+def _draw_ground_patches(world_w: float, world_h: float, detail_pressure: float):
+    patch_step = max(10.0, min(world_w, world_h) / (8.0 if detail_pressure < 100.0 else 6.0))
+    cols = max(3, int(world_w / patch_step) + 1)
+    rows = max(3, int(world_h / patch_step) + 1)
+    steps = 14 if detail_pressure < 110.0 else 10
+    base_col = (0.14, 0.19, 0.12)
+
+    for ix in range(cols):
+        for iz in range(rows):
+            n = _hash01(ix * 0.73, iz * 0.91, patch_step)
+            cx = (ix + 0.5) * patch_step + (n - 0.5) * patch_step * 0.38
+            cz = (iz + 0.5) * patch_step + (_hash01(ix * 1.19, iz * 0.67, patch_step) - 0.5) * patch_step * 0.34
+            rx = patch_step * (0.22 + 0.12 * n)
+            rz = patch_step * (0.18 + 0.14 * _hash01(ix * 0.49, iz * 1.31, 8.0))
+            col = _fake_lighting_color(_vary_rgb(base_col, cx * 0.11, cz * 0.13, amount=0.05), 0.0, 1.0, 0.0)
+            alpha = 0.06 + 0.08 * n
+
+            glColor4f(col[0], col[1], col[2], alpha)
+            glBegin(GL_TRIANGLE_FAN)
+            glVertex3f(cx, 0.0008, cz)
+            for step in range(steps + 1):
+                ang = (2.0 * math.pi) * (step / steps)
+                wobble = 0.88 + 0.22 * _hash01(ix * 3.1 + step, iz * 2.7, ang)
+                vx = cx + math.cos(ang) * rx * wobble
+                vz = cz + math.sin(ang) * rz * wobble
+                glVertex3f(vx, 0.0008, vz)
+            glEnd()
+
+
+def _draw_shingled_roof(
+    cx: float,
+    cy: float,
+    cz: float,
+    sx: float,
+    sy: float,
+    sz: float,
+    yaw_rad: float,
+    base_color: Tuple[float, float, float],
+    top_color: Tuple[float, float, float],
+    tiers: int = 5,
+):
+    tiers = max(3, int(tiers))
+    slab_h = max(0.02, sy * 0.045)
+    for i in range(tiers):
+        t = i / float(max(1, tiers - 1))
+        tier_col = _vary_rgb(_mix_rgb(base_color, top_color, 0.15 + t * 0.45), cx * 0.2 + i, cz * 0.2, 0.04)
+        _draw_oriented_box(
+            cx=cx,
+            cy=cy + slab_h * (0.5 + i * 0.95),
+            cz=cz,
+            hx=sx * (1.08 - 0.10 * t),
+            hy=slab_h,
+            hz=sz * (1.08 - 0.10 * t),
+            yaw_rad=yaw_rad,
+            base_color=tier_col,
+            pitch_forward=0.0,
+        )
+
+    _draw_pyramid_roof(
+        cx=cx,
+        cy=cy + slab_h * (tiers * 0.90),
+        cz=cz,
+        sx=sx,
+        sy=sy,
+        sz=sz,
+        yaw_rad=yaw_rad,
+        base_color=base_color,
+        top_color=top_color,
+    )
+
+
+def _draw_stone_courses(
+    cx: float,
+    cy: float,
+    cz: float,
+    hx: float,
+    hy: float,
+    hz: float,
+    yaw_rad: float,
+    base_color: Tuple[float, float, float],
+    courses: int = 4,
+):
+    courses = max(2, int(courses))
+    course_full_h = (hy * 2.0) / courses
+    bottom_y = cy - hy
+    for i in range(courses):
+        center_y = bottom_y + course_full_h * (i + 0.5)
+        inset = 0.96 - 0.04 * (i % 2)
+        stone_col = _vary_rgb(base_color, cx * 0.33 + i * 1.7, cz * 0.41, 0.05)
+        _draw_oriented_box(
+            cx=cx,
+            cy=center_y,
+            cz=cz,
+            hx=hx * inset,
+            hy=course_full_h * 0.45,
+            hz=hz * (0.96 - 0.03 * ((i + 1) % 2)),
+            yaw_rad=yaw_rad,
+            base_color=stone_col,
+            pitch_forward=0.0,
+        )
+
+
+def _draw_water_surface(
+    x: float,
+    y: float,
+    z: float,
+    sx: float,
+    sz: float,
+    time_seed: float,
+):
+    layers = [
+        ((0.10, 0.28, 0.50), 0.72, 0.00),
+        ((0.16, 0.42, 0.68), 0.48, 0.08),
+        ((0.34, 0.63, 0.86), 0.24, 0.15),
+    ]
+    for rgb, alpha, inset in layers:
+        glColor4f(rgb[0], rgb[1], rgb[2], alpha)
+        glBegin(GL_QUADS)
+        glVertex3f(x - sx + inset, y, z - sz + inset)
+        glVertex3f(x + sx - inset, y, z - sz + inset)
+        glVertex3f(x + sx - inset, y, z + sz - inset)
+        glVertex3f(x - sx + inset, y, z + sz - inset)
+        glEnd()
+
+    glColor4f(0.80, 0.93, 1.00, 0.26)
+    glLineWidth(1.1)
+    for row in range(5):
+        zz = z - sz * 0.72 + (row / 4.0) * sz * 1.44
+        glBegin(GL_LINES)
+        segments = 12
+        prev = None
+        for seg in range(segments + 1):
+            t = seg / float(segments)
+            xx = x - sx * 0.80 + t * sx * 1.60
+            wave = math.sin(time_seed * 2.7 + row * 0.9 + t * math.pi * 3.2) * sz * 0.035
+            pt = (xx, y + 0.004, zz + wave)
+            if prev is not None:
+                glVertex3f(*prev)
+                glVertex3f(*pt)
+            prev = pt
+        glEnd()
 
 
 def _draw_sphere_lowpoly(
@@ -832,19 +1033,92 @@ def _draw_house(inst: StaticMeshInstance):
     sy = inst.scale.y * 0.5
     sz = inst.scale.z * 0.5
 
-    wall_color = (0.5, 0.45, 0.4)
-    roof_color = (0.4, 0.1, 0.1)
-    roof_high  = (0.8, 0.2, 0.2)
+    stone_base_h = max(0.12, sy * 0.24)
+    wall_h = max(0.25, sy - stone_base_h)
+    wall_color = (0.66, 0.59, 0.50)
+    beam_color = (0.39, 0.25, 0.16)
+    roof_color = (0.36, 0.15, 0.11)
+    roof_high = (0.63, 0.27, 0.18)
+    window_color = (0.30, 0.42, 0.52)
+
+    _draw_stone_courses(
+        cx=x,
+        cy=y + stone_base_h,
+        cz=z,
+        hx=sx * 1.02,
+        hy=stone_base_h,
+        hz=sz * 1.02,
+        yaw_rad=yaw,
+        base_color=(0.49, 0.49, 0.51),
+        courses=2,
+    )
 
     _draw_oriented_box(
-        cx=x, cy=y + sy, cz=z,
-        hx=sx, hy=sy, hz=sz,
+        cx=x,
+        cy=y + stone_base_h * 2.0 + wall_h,
+        cz=z,
+        hx=sx,
+        hy=wall_h,
+        hz=sz,
         yaw_rad=yaw,
         base_color=wall_color,
         pitch_forward=0.0,
     )
 
-    _draw_pyramid_roof(
+    for lx in (-sx * 0.84, sx * 0.84):
+        wx, wz = _yaw_world_offset(x, z, yaw, lx, 0.0)
+        _draw_oriented_box(
+            cx=wx,
+            cy=y + stone_base_h * 2.0 + wall_h,
+            cz=wz,
+            hx=max(0.05, sx * 0.10),
+            hy=wall_h,
+            hz=max(0.05, sz * 0.10),
+            yaw_rad=yaw,
+            base_color=beam_color,
+            pitch_forward=0.0,
+        )
+    for lz in (-sz * 0.84, sz * 0.84):
+        wx, wz = _yaw_world_offset(x, z, yaw, 0.0, lz)
+        _draw_oriented_box(
+            cx=wx,
+            cy=y + stone_base_h * 2.0 + wall_h,
+            cz=wz,
+            hx=max(0.05, sx * 0.92),
+            hy=max(0.04, wall_h * 0.09),
+            hz=max(0.05, sz * 0.10),
+            yaw_rad=yaw,
+            base_color=beam_color,
+            pitch_forward=0.0,
+        )
+
+    door_x, door_z = _yaw_world_offset(x, z, yaw, 0.0, sz * 0.92)
+    _draw_oriented_box(
+        cx=door_x,
+        cy=y + stone_base_h * 2.0 + wall_h * 0.48,
+        cz=door_z,
+        hx=max(0.12, sx * 0.18),
+        hy=max(0.22, wall_h * 0.48),
+        hz=max(0.03, sz * 0.05),
+        yaw_rad=yaw,
+        base_color=(0.32, 0.21, 0.14),
+        pitch_forward=0.0,
+    )
+    for lx in (-sx * 0.42, sx * 0.42):
+        wx, wz = _yaw_world_offset(x, z, yaw, lx, sz * 0.94)
+        _draw_oriented_box(
+            cx=wx,
+            cy=y + stone_base_h * 2.0 + wall_h * 0.76,
+            cz=wz,
+            hx=max(0.11, sx * 0.14),
+            hy=max(0.10, wall_h * 0.16),
+            hz=max(0.03, sz * 0.04),
+            yaw_rad=yaw,
+            base_color=window_color,
+            pitch_forward=0.0,
+        )
+
+    _draw_shingled_roof(
         cx=x,
         cy=y + sy*2.0,
         cz=z,
@@ -854,6 +1128,7 @@ def _draw_house(inst: StaticMeshInstance):
         yaw_rad=yaw,
         base_color=roof_color,
         top_color=roof_high,
+        tiers=5,
     )
 
 
@@ -864,13 +1139,14 @@ def _draw_tree(inst: StaticMeshInstance):
     x, y, z = inst.pos.x, inst.pos.y, inst.pos.z
     yaw = inst.yaw
 
-    trunk_h = 0.6 * inst.scale.y
-    crown_h = 0.9 * inst.scale.y
-    radius  = 0.2 * inst.scale.x
+    trunk_h = 0.64 * inst.scale.y
+    crown_h = 0.95 * inst.scale.y
+    radius  = 0.22 * inst.scale.x
 
-    trunk_color = (0.35, 0.22, 0.15)
-    leaf_color  = (0.1, 0.45, 0.1)
-    leaf_high   = (0.3, 0.8, 0.3)
+    trunk_color = (0.34, 0.23, 0.15)
+    bark_dark = (0.22, 0.14, 0.10)
+    leaf_color  = (0.12, 0.35, 0.12)
+    leaf_high   = (0.36, 0.62, 0.22)
 
     _draw_oriented_box(
         cx=x,
@@ -883,16 +1159,38 @@ def _draw_tree(inst: StaticMeshInstance):
         base_color=trunk_color,
         pitch_forward=0.0,
     )
+    _draw_oriented_box(
+        cx=x,
+        cy=y + trunk_h * 0.52,
+        cz=z,
+        hx=radius * 0.18,
+        hy=trunk_h * 0.48,
+        hz=radius * 0.72,
+        yaw_rad=yaw + 0.15,
+        base_color=bark_dark,
+        pitch_forward=0.0,
+    )
 
     _draw_pyramid_roof(
         cx=x,
-        cy=y + trunk_h,
+        cy=y + trunk_h * 0.82,
         cz=z,
-        sx=radius,
-        sy=crown_h,
-        sz=radius,
+        sx=radius * 1.28,
+        sy=crown_h * 0.66,
+        sz=radius * 1.24,
         yaw_rad=yaw,
         base_color=leaf_color,
+        top_color=leaf_high,
+    )
+    _draw_pyramid_roof(
+        cx=x,
+        cy=y + trunk_h + crown_h * 0.18,
+        cz=z,
+        sx=radius * 0.92,
+        sy=crown_h * 0.70,
+        sz=radius * 0.88,
+        yaw_rad=yaw + 0.23,
+        base_color=_vary_rgb(leaf_color, x, z, 0.04),
         top_color=leaf_high,
     )
 
@@ -905,15 +1203,17 @@ def _draw_lake(inst: StaticMeshInstance):
     sx = inst.scale.x
     sz = inst.scale.z
 
-    glColor4f(0.1, 0.4, 0.8, 0.6)
+    glColor4f(0.20, 0.24, 0.19, 0.24)
     glBegin(GL_QUADS)
-    glVertex3f(x - sx, y, z - sz)
-    glVertex3f(x + sx, y, z - sz)
-    glVertex3f(x + sx, y, z + sz)
-    glVertex3f(x - sx, y, z + sz)
+    glVertex3f(x - sx * 1.05, y - 0.002, z - sz * 1.05)
+    glVertex3f(x + sx * 1.05, y - 0.002, z - sz * 1.05)
+    glVertex3f(x + sx * 1.05, y - 0.002, z + sz * 1.05)
+    glVertex3f(x - sx * 1.05, y - 0.002, z + sz * 1.05)
     glEnd()
 
-    glColor3f(0.2, 0.5, 0.9)
+    _draw_water_surface(x, y, z, sx, sz, time_seed=x * 0.17 + z * 0.23)
+
+    glColor3f(0.34, 0.62, 0.86)
     glLineWidth(2.0)
     glBegin(GL_LINES)
     glVertex3f(x - sx, y+0.01, z - sz); glVertex3f(x + sx, y+0.01, z - sz)
@@ -974,9 +1274,30 @@ def _draw_road(inst: StaticMeshInstance):
         cx=x, cy=y + 0.02, cz=z,
         hx=half_len, hy=0.02, hz=half_w,
         yaw_rad=yaw,
-        base_color=(0.24, 0.22, 0.20),
+        base_color=(0.30, 0.25, 0.20),
         pitch_forward=0.0,
     )
+
+    _draw_oriented_box(
+        cx=x, cy=y + 0.024, cz=z,
+        hx=half_len * 0.96, hy=0.006, hz=half_w * 0.78,
+        yaw_rad=yaw,
+        base_color=(0.22, 0.18, 0.14),
+        pitch_forward=0.0,
+    )
+    for lx in (-half_len * 0.28, half_len * 0.28):
+        wx, wz = _yaw_world_offset(x, z, yaw, lx, 0.0)
+        _draw_oriented_box(
+            cx=wx,
+            cy=y + 0.026,
+            cz=wz,
+            hx=half_len * 0.16,
+            hy=0.005,
+            hz=half_w * 0.64,
+            yaw_rad=yaw,
+            base_color=(0.36, 0.31, 0.25),
+            pitch_forward=0.0,
+        )
     # Светлая центральная полоса для читаемости.
     _draw_oriented_box(
         cx=x, cy=y + 0.028, cz=z,
@@ -1019,6 +1340,17 @@ def _draw_rock(inst: StaticMeshInstance):
         base_color=(0.50, 0.52, 0.56),
         pitch_forward=0.0,
     )
+    _draw_oriented_box(
+        cx=x - 0.12 * hx,
+        cy=y + hy * 0.92,
+        cz=z + 0.08 * hz,
+        hx=hx * 0.42,
+        hy=hy * 0.14,
+        hz=hz * 0.34,
+        yaw_rad=yaw + 0.25,
+        base_color=(0.26, 0.34, 0.19),
+        pitch_forward=0.0,
+    )
 
 
 def _draw_log(inst: StaticMeshInstance):
@@ -1042,6 +1374,17 @@ def _draw_log(inst: StaticMeshInstance):
         base_color=(0.42, 0.26, 0.15),
         pitch_forward=0.0,
     )
+    _draw_oriented_box(
+        cx=x,
+        cy=y + hy + 0.04,
+        cz=z,
+        hx=hx * 0.96,
+        hy=hy * 0.18,
+        hz=hz * 0.62,
+        yaw_rad=yaw,
+        base_color=(0.56, 0.37, 0.21),
+        pitch_forward=0.0,
+    )
 
 
 def _draw_tower(inst: StaticMeshInstance):
@@ -1054,26 +1397,32 @@ def _draw_tower(inst: StaticMeshInstance):
     base_hz = max(0.6, abs(inst.scale.z) * 0.38)
     tower_h = max(2.5, abs(inst.scale.y))
 
-    _draw_oriented_box(
-        cx=x, cy=y + tower_h * 0.45, cz=z,
-        hx=base_hx, hy=tower_h * 0.45, hz=base_hz,
-        yaw_rad=yaw,
-        base_color=(0.48, 0.42, 0.34),
-        pitch_forward=0.0,
-    )
+    post_col = (0.45, 0.35, 0.24)
+    deck_col = (0.30, 0.24, 0.18)
+    for lx in (-base_hx * 0.78, base_hx * 0.78):
+        for lz in (-base_hz * 0.78, base_hz * 0.78):
+            wx, wz = _yaw_world_offset(x, z, yaw, lx, lz)
+            _draw_oriented_box(
+                cx=wx, cy=y + tower_h * 0.45, cz=wz,
+                hx=max(0.08, base_hx * 0.12), hy=tower_h * 0.45, hz=max(0.08, base_hz * 0.12),
+                yaw_rad=yaw,
+                base_color=post_col,
+                pitch_forward=0.0,
+            )
     _draw_oriented_box(
         cx=x, cy=y + tower_h * 0.90, cz=z,
         hx=base_hx * 1.15, hy=tower_h * 0.08, hz=base_hz * 1.15,
         yaw_rad=yaw,
-        base_color=(0.35, 0.30, 0.26),
+        base_color=deck_col,
         pitch_forward=0.0,
     )
-    _draw_pyramid_roof(
+    _draw_shingled_roof(
         cx=x, cy=y + tower_h * 0.98, cz=z,
         sx=base_hx * 1.25, sy=tower_h * 0.30, sz=base_hz * 1.25,
         yaw_rad=yaw,
         base_color=(0.28, 0.14, 0.10),
         top_color=(0.56, 0.24, 0.17),
+        tiers=4,
     )
 
 
@@ -1086,40 +1435,44 @@ def _draw_well(inst: StaticMeshInstance):
     base_r = max(0.45, abs(inst.scale.x) * 0.42)
     h = max(0.8, abs(inst.scale.y))
 
-    _draw_oriented_box(
+    _draw_stone_courses(
         cx=x, cy=y + h * 0.28, cz=z,
         hx=base_r, hy=h * 0.28, hz=base_r,
         yaw_rad=yaw,
         base_color=(0.55, 0.56, 0.60),
-        pitch_forward=0.0,
+        courses=4,
     )
-    _draw_oriented_box(
-        cx=x, cy=y + h * 0.40, cz=z,
-        hx=base_r * 0.76, hy=h * 0.03, hz=base_r * 0.76,
-        yaw_rad=yaw,
-        base_color=(0.15, 0.42, 0.72),
-        pitch_forward=0.0,
+    _draw_water_surface(
+        x=x,
+        y=y + h * 0.40,
+        z=z,
+        sx=base_r * 0.76,
+        sz=base_r * 0.76,
+        time_seed=x * 0.11 + z * 0.09,
     )
+    left_x, left_z = _yaw_world_offset(x, z, yaw, -base_r * 0.62, 0.0)
+    right_x, right_z = _yaw_world_offset(x, z, yaw, base_r * 0.62, 0.0)
     _draw_oriented_box(
-        cx=x - base_r * 0.62, cy=y + h * 0.80, cz=z,
+        cx=left_x, cy=y + h * 0.80, cz=left_z,
         hx=0.08, hy=h * 0.35, hz=0.08,
         yaw_rad=yaw,
         base_color=(0.42, 0.30, 0.20),
         pitch_forward=0.0,
     )
     _draw_oriented_box(
-        cx=x + base_r * 0.62, cy=y + h * 0.80, cz=z,
+        cx=right_x, cy=y + h * 0.80, cz=right_z,
         hx=0.08, hy=h * 0.35, hz=0.08,
         yaw_rad=yaw,
         base_color=(0.42, 0.30, 0.20),
         pitch_forward=0.0,
     )
-    _draw_pyramid_roof(
+    _draw_shingled_roof(
         cx=x, cy=y + h * 1.28, cz=z,
         sx=base_r * 1.25, sy=h * 0.42, sz=base_r * 1.25,
         yaw_rad=yaw,
         base_color=(0.33, 0.16, 0.11),
         top_color=(0.62, 0.27, 0.17),
+        tiers=4,
     )
 
 
@@ -1133,12 +1486,12 @@ def _draw_shrine(inst: StaticMeshInstance, global_time: float):
     sy = max(0.8, abs(inst.scale.y))
     sz = max(0.8, abs(inst.scale.z) * 0.52)
 
-    _draw_oriented_box(
+    _draw_stone_courses(
         cx=x, cy=y + sy * 0.22, cz=z,
         hx=sx, hy=sy * 0.22, hz=sz,
         yaw_rad=yaw,
         base_color=(0.56, 0.55, 0.52),
-        pitch_forward=0.0,
+        courses=3,
     )
     _draw_oriented_box(
         cx=x, cy=y + sy * 0.55, cz=z,
@@ -1147,12 +1500,13 @@ def _draw_shrine(inst: StaticMeshInstance, global_time: float):
         base_color=(0.78, 0.76, 0.72),
         pitch_forward=0.0,
     )
-    _draw_pyramid_roof(
+    _draw_shingled_roof(
         cx=x, cy=y + sy * 0.82, cz=z,
         sx=sx * 1.08, sy=sy * 0.52, sz=sz * 1.08,
         yaw_rad=yaw,
         base_color=(0.22, 0.26, 0.35),
         top_color=(0.36, 0.58, 0.92),
+        tiers=4,
     )
     pulse = 0.5 + 0.5 * math.sin(global_time * 2.5 + x * 0.5 + z * 0.5)
     _draw_ring(x, z, radius=max(sx, sz) * (0.9 + pulse * 0.35), y=y + 0.03,
@@ -1172,7 +1526,7 @@ def _draw_lantern(inst: StaticMeshInstance, global_time: float):
         cx=x, cy=y + pole_h * 0.45, cz=z,
         hx=pole_r, hy=pole_h * 0.45, hz=pole_r,
         yaw_rad=yaw,
-        base_color=(0.25, 0.23, 0.20),
+        base_color=(0.30, 0.22, 0.15),
         pitch_forward=0.0,
     )
 
@@ -1181,7 +1535,7 @@ def _draw_lantern(inst: StaticMeshInstance, global_time: float):
         cx=x, cy=lamp_y, cz=z,
         hx=pole_r * 2.2, hy=pole_r * 2.2, hz=pole_r * 2.2,
         yaw_rad=yaw,
-        base_color=(1.0, 0.85, 0.50),
+        base_color=(0.92, 0.78, 0.46),
         pitch_forward=0.0,
     )
     glow = 0.5 + 0.5 * math.sin(global_time * 5.5 + x + z)
@@ -1195,7 +1549,7 @@ def _draw_wall(inst: StaticMeshInstance):
     hx = max(0.6, abs(inst.scale.x))
     hy = max(0.3, abs(inst.scale.y) * 0.45)
     hz = max(0.16, abs(inst.scale.z) * 0.35)
-    _draw_oriented_box(
+    _draw_stone_courses(
         cx=x,
         cy=y + hy,
         cz=z,
@@ -1204,8 +1558,21 @@ def _draw_wall(inst: StaticMeshInstance):
         hz=hz,
         yaw_rad=yaw,
         base_color=(0.46, 0.47, 0.50),
-        pitch_forward=0.0,
+        courses=4,
     )
+    for lx in (-hx * 0.66, 0.0, hx * 0.66):
+        wx, wz = _yaw_world_offset(x, z, yaw, lx, 0.0)
+        _draw_oriented_box(
+            cx=wx,
+            cy=y + hy * 2.02,
+            cz=wz,
+            hx=max(0.10, hx * 0.14),
+            hy=max(0.07, hy * 0.20),
+            hz=hz * 0.90,
+            yaw_rad=yaw,
+            base_color=(0.56, 0.57, 0.60),
+            pitch_forward=0.0,
+        )
 
 
 def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
@@ -1425,6 +1792,57 @@ def draw_agent_direction_arrow(agent: AgentEntity):
     glEnd()
 
 
+def draw_agent_impostor(agent: AgentEntity, t: float):
+    """
+    Дальний LOD для агента: дешёвый силуэт вместо полной гуманоидной сборки.
+    """
+    yaw = float(agent.transform.yaw)
+    fear = clamp(float(agent.anim.fear), 0.0, 1.0)
+    alive = bool(agent.anim.alive)
+    px = float(agent.transform.pos.x)
+    pz = float(agent.transform.pos.z)
+
+    body_core = _color_from_state(fear, alive)
+    cloth = _mix_rgb(body_core, (0.10, 0.15, 0.23), 0.42)
+    skin = _mix_rgb((0.95, 0.85, 0.74), (0.78, 0.63, 0.54), fear * 0.45)
+    if not alive:
+        skin = (0.60, 0.61, 0.64)
+    lean = clamp((fear - 0.45) * 0.22, 0.0, 0.10)
+
+    _draw_oriented_box(
+        cx=px,
+        cy=0.95 if alive else 0.72,
+        cz=pz,
+        hx=0.24,
+        hy=0.48 if alive else 0.28,
+        hz=0.18,
+        yaw_rad=yaw,
+        base_color=cloth,
+        pitch_forward=lean,
+    )
+    _draw_sphere_lowpoly(
+        px + math.cos(yaw) * 0.05,
+        1.62 if alive else 0.96,
+        pz + math.sin(yaw) * 0.05,
+        radius=0.16,
+        base_color=skin,
+        lat_steps=5,
+        lon_steps=8,
+    )
+
+    if agent.selected:
+        pulse = (math.sin(t * 4.0) * 0.5 + 0.5) if SELECTED_PULSE else 0.0
+        _draw_ring(
+            px,
+            pz,
+            radius=1.0 + pulse * 0.18,
+            y=0.05,
+            rgb=(0.2, 0.8, 1.0),
+            width=1.8,
+            alpha=0.55 + 0.25 * pulse,
+        )
+
+
 # --- отрисовка зверя -------------------------------------------------
 
 def draw_animal_quadruped(an: AnimalEntity, t: float):
@@ -1523,6 +1941,52 @@ def draw_animal_direction_arrow(an: AnimalEntity):
     glEnd()
 
 
+def draw_animal_impostor(an: AnimalEntity, t: float):
+    """
+    Дальний LOD для зверя: дешёвое тело и голова без тяжёлых колец/эффектов.
+    """
+    yaw = float(an.transform.yaw)
+    alive = bool(an.anim.alive)
+    px = float(an.transform.pos.x)
+    pz = float(an.transform.pos.z)
+
+    body_col = _animal_body_color(an.anim.temperament, an.anim.tamed, alive)
+    _draw_oriented_box(
+        cx=px,
+        cy=0.48,
+        cz=pz,
+        hx=0.28,
+        hy=0.16,
+        hz=0.48,
+        yaw_rad=yaw,
+        base_color=body_col,
+        pitch_forward=0.0,
+    )
+    _draw_oriented_box(
+        cx=px + math.cos(yaw) * 0.46,
+        cy=0.56,
+        cz=pz + math.sin(yaw) * 0.46,
+        hx=0.12,
+        hy=0.10,
+        hz=0.12,
+        yaw_rad=yaw,
+        base_color=body_col,
+        pitch_forward=0.0,
+    )
+
+    if an.selected:
+        pulse = (math.sin(t * 4.0) * 0.5 + 0.5) if SELECTED_PULSE else 0.0
+        _draw_ring(
+            px,
+            pz,
+            radius=0.9 + pulse * 0.16,
+            y=0.05,
+            rgb=(0.2, 0.8, 1.0),
+            width=1.8,
+            alpha=0.50 + 0.22 * pulse,
+        )
+
+
 # ---------------------------------------------------------------------
 # MiniMatrixEngine
 # ---------------------------------------------------------------------
@@ -1555,6 +2019,7 @@ class MiniMatrixEngine:
         # камера (для HUD LOD)
         self._cam_pos: Tuple[float, float, float] = (0.0, 20.0, -20.0)
         self._cam_look: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self.hidden_agent_ids: set[str] = set()
 
         # HUD / текст
         self._hud_text_enabled = HUD_SHOW_TEXT and _HAS_GLUT
@@ -1573,6 +2038,140 @@ class MiniMatrixEngine:
         Подгружаем заранее расставленные меши окружения (лес, дома, костёр...).
         """
         self.static_meshes = meshes[:]
+
+    def _dist2_xz(self, x: float, z: float) -> float:
+        cx, _cy, cz = self._cam_pos
+        dx = x - cx
+        dz = z - cz
+        return dx * dx + dz * dz
+
+    def _within_render_lod(self, x: float, z: float, max_distance: float, force: bool = False) -> bool:
+        if force or max_distance <= 0.0:
+            return True
+        return self._dist2_xz(x, z) <= (max_distance * max_distance)
+
+    def _static_mesh_radius(self, inst: StaticMeshInstance) -> float:
+        scale_r = max(abs(inst.scale.x), abs(inst.scale.z), abs(inst.scale.y))
+        kind_scale = {
+            "tree": 1.2,
+            "house": 1.8,
+            "road": 2.6,
+            "wall": 2.8,
+            "lake": 2.4,
+            "tower": 2.0,
+            "shrine": 1.4,
+        }.get(inst.kind, 1.0)
+        return max(1.0, scale_r * kind_scale)
+
+    def _collect_render_lists(self):
+        visible_static: List[StaticMeshInstance] = []
+        for inst in self.static_meshes:
+            lod_distance = MAX_STATIC_DISTANCE + self._static_mesh_radius(inst)
+            if self._within_render_lod(inst.pos.x, inst.pos.z, lod_distance):
+                visible_static.append(inst)
+
+        visible_zones: List[ZoneObject] = []
+        for zone in self.world.zones:
+            if self._within_render_lod(zone.x, zone.z, MAX_ZONE_DISTANCE + zone.radius):
+                visible_zones.append(zone)
+
+        visible_agents: List[AgentEntity] = []
+        detailed_agent_ids: set[str] = set()
+        for agent in self.agents.values():
+            if agent.agent_id in self.hidden_agent_ids:
+                continue
+            force = agent.selected
+            px = agent.transform.pos.x
+            pz = agent.transform.pos.z
+            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE, force=force):
+                continue
+            visible_agents.append(agent)
+            if self._within_render_lod(px, pz, MAX_AGENT_DETAIL_DISTANCE, force=force):
+                detailed_agent_ids.add(agent.agent_id)
+
+        visible_animals: List[AnimalEntity] = []
+        detailed_animal_ids: set[str] = set()
+        for animal in self.animals.values():
+            force = animal.selected
+            px = animal.transform.pos.x
+            pz = animal.transform.pos.z
+            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE, force=force):
+                continue
+            visible_animals.append(animal)
+            if self._within_render_lod(px, pz, MAX_ANIMAL_DETAIL_DISTANCE, force=force):
+                detailed_animal_ids.add(animal.animal_id)
+
+        return visible_static, visible_zones, visible_agents, detailed_agent_ids, visible_animals, detailed_animal_ids
+
+    def _cell_key(self, x: float, z: float, cell_size: float) -> Tuple[int, int]:
+        return int(math.floor(x / cell_size)), int(math.floor(z / cell_size))
+
+    def _iter_spatial_pairs(self, entities: List[Any], cell_size: float):
+        buckets: Dict[Tuple[int, int], List[Any]] = {}
+        for ent in entities:
+            if not ent.anim.alive:
+                continue
+            key = self._cell_key(ent.transform.pos.x, ent.transform.pos.z, cell_size)
+            buckets.setdefault(key, []).append(ent)
+
+        neighbor_offsets = ((1, 0), (0, 1), (1, 1), (-1, 1))
+        for key, bucket in buckets.items():
+            for i in range(len(bucket)):
+                for j in range(i + 1, len(bucket)):
+                    yield bucket[i], bucket[j]
+            for dx, dz in neighbor_offsets:
+                other_bucket = buckets.get((key[0] + dx, key[1] + dz))
+                if not other_bucket:
+                    continue
+                for a in bucket:
+                    for b in other_bucket:
+                        yield a, b
+
+    def _iter_cross_spatial_pairs(
+        self,
+        agents: List[AgentEntity],
+        animals: List[AnimalEntity],
+        cell_size: float,
+    ):
+        animal_buckets: Dict[Tuple[int, int], List[AnimalEntity]] = {}
+        for an in animals:
+            if not an.anim.alive:
+                continue
+            key = self._cell_key(an.transform.pos.x, an.transform.pos.z, cell_size)
+            animal_buckets.setdefault(key, []).append(an)
+
+        for ag in agents:
+            if not ag.anim.alive:
+                continue
+            base_key = self._cell_key(ag.transform.pos.x, ag.transform.pos.z, cell_size)
+            for dx in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for an in animal_buckets.get((base_key[0] + dx, base_key[1] + dz), []):
+                        yield ag, an
+
+    def _apply_pair_separation(self, a: Any, b: Any):
+        if not a.anim.alive or not b.anim.alive:
+            return
+        dx = a.transform.pos.x - b.transform.pos.x
+        dz = a.transform.pos.z - b.transform.pos.z
+        dist2 = dx * dx + dz * dz
+        if dist2 < 1e-9:
+            return
+        min_dist = a.body.radius + b.body.radius
+        if dist2 >= (min_dist * min_dist):
+            return
+
+        dist = math.sqrt(dist2)
+        if dist <= 1e-6:
+            return
+
+        push = (min_dist - dist) * 0.5 * SEPARATION_PUSH
+        nx = dx / dist
+        nz = dz / dist
+        a.transform.pos.x = clamp(a.transform.pos.x + nx * push, 0.0, self.world.width)
+        a.transform.pos.z = clamp(a.transform.pos.z + nz * push, 0.0, self.world.height)
+        b.transform.pos.x = clamp(b.transform.pos.x - nx * push, 0.0, self.world.width)
+        b.transform.pos.z = clamp(b.transform.pos.z - nz * push, 0.0, self.world.height)
 
     # -----------------------------------------------------------------
     # СИНХРОНИЗАЦИЯ С СОСТОЯНИЕМ СЕРВЕРА
@@ -1639,8 +2238,12 @@ class MiniMatrixEngine:
 
             # направление взгляда по скорости
             speed = math.hypot(vel_x, vel_z)
+            facing_x, facing_z = _xy_from_any(a.get("facing", {"x": 0.0, "y": 0.0}))
+            facing_len = math.hypot(facing_x, facing_z)
             if speed > 1e-6:
                 desired_dir = Vec3(vel_x / speed, 0.0, vel_z / speed)
+            elif facing_len > 1e-6:
+                desired_dir = Vec3(facing_x / facing_len, 0.0, facing_z / facing_len)
             else:
                 if aid in self.agents:
                     desired_dir = self.agents[aid].brain.desired_dir
@@ -1895,109 +2498,27 @@ class MiniMatrixEngine:
         Локальное "разведение" агентов, чтобы в кадре не стояли в одной точке.
         Это не влияет на сервер — чисто визуальный щиток.
         """
-        ids = list(self.agents.keys())
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                a = self.agents[ids[i]]
-                b = self.agents[ids[j]]
-                if not a.anim.alive or not b.anim.alive:
-                    continue
-                dx = a.transform.pos.x - b.transform.pos.x
-                dz = a.transform.pos.z - b.transform.pos.z
-                dist2 = dx * dx + dz * dz
-                if dist2 < 1e-9:
-                    continue
-                min_dist = a.body.radius + b.body.radius
-                if dist2 < (min_dist * min_dist):
-                    dist = math.sqrt(dist2)
-                    if dist > 1e-6:
-                        push = (min_dist - dist) * 0.5 * SEPARATION_PUSH
-                        nx = dx / dist
-                        nz = dz / dist
-                        a.transform.pos.x += nx * push
-                        a.transform.pos.z += nz * push
-                        b.transform.pos.x -= nx * push
-                        b.transform.pos.z -= nz * push
-
-                        a.transform.pos.x = clamp(a.transform.pos.x, 0.0, self.world.width)
-                        a.transform.pos.z = clamp(a.transform.pos.z, 0.0, self.world.height)
-                        b.transform.pos.x = clamp(b.transform.pos.x, 0.0, self.world.width)
-                        b.transform.pos.z = clamp(b.transform.pos.z, 0.0, self.world.height)
+        entities = list(self.agents.values())
+        for a, b in self._iter_spatial_pairs(entities, SOCIAL_AVOIDANCE_CELL):
+            self._apply_pair_separation(a, b)
 
     def _apply_social_avoidance_animals(self):
         """
         То же самое для зверей.
         """
-        ids = list(self.animals.keys())
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):
-                a = self.animals[ids[i]]
-                b = self.animals[ids[j]]
-                if not a.anim.alive or not b.anim.alive:
-                    continue
-                dx = a.transform.pos.x - b.transform.pos.x
-                dz = a.transform.pos.z - b.transform.pos.z
-                dist2 = dx * dx + dz * dz
-                if dist2 < 1e-9:
-                    continue
-                min_dist = a.body.radius + b.body.radius
-                if dist2 < (min_dist * min_dist):
-                    dist = math.sqrt(dist2)
-                    if dist > 1e-6:
-                        push = (min_dist - dist) * 0.5 * SEPARATION_PUSH
-                        nx = dx / dist
-                        nz = dz / dist
-                        a.transform.pos.x += nx * push
-                        a.transform.pos.z += nz * push
-                        b.transform.pos.x -= nx * push
-                        b.transform.pos.z -= nz * push
-
-                        a.transform.pos.x = clamp(a.transform.pos.x, 0.0, self.world.width)
-                        a.transform.pos.z = clamp(a.transform.pos.z, 0.0, self.world.height)
-                        b.transform.pos.x = clamp(b.transform.pos.x, 0.0, self.world.width)
-                        b.transform.pos.z = clamp(b.transform.pos.z, 0.0, self.world.height)
+        entities = list(self.animals.values())
+        for a, b in self._iter_spatial_pairs(entities, SOCIAL_AVOIDANCE_CELL):
+            self._apply_pair_separation(a, b)
 
     def _apply_social_avoidance_cross(self):
         """
         Разведение "агент ↔ зверь".
         Нужно, чтобы волк визуально не залезал в туловище человека.
         """
-        a_ids = list(self.agents.keys())
-        z_ids = list(self.animals.keys())
-
-        for aid in a_ids:
-            for zid in z_ids:
-                ag = self.agents[aid]
-                an = self.animals[zid]
-
-                # если кто-то мёртв, можно не толкать
-                if not ag.anim.alive or not an.anim.alive:
-                    continue
-
-                dx = ag.transform.pos.x - an.transform.pos.x
-                dz = ag.transform.pos.z - an.transform.pos.z
-                dist2 = dx * dx + dz * dz
-                if dist2 < 1e-9:
-                    continue
-
-                min_dist = ag.body.radius + an.body.radius
-                if dist2 < (min_dist * min_dist):
-                    dist = math.sqrt(dist2)
-                    if dist > 1e-6:
-                        push = (min_dist - dist) * 0.5 * SEPARATION_PUSH
-                        nx = dx / dist
-                        nz = dz / dist
-
-                        # раздвигаем оба тела поровну
-                        ag.transform.pos.x += nx * push
-                        ag.transform.pos.z += nz * push
-                        an.transform.pos.x -= nx * push
-                        an.transform.pos.z -= nz * push
-
-                        ag.transform.pos.x = clamp(ag.transform.pos.x, 0.0, self.world.width)
-                        ag.transform.pos.z = clamp(ag.transform.pos.z, 0.0, self.world.height)
-                        an.transform.pos.x = clamp(an.transform.pos.x, 0.0, self.world.width)
-                        an.transform.pos.z = clamp(an.transform.pos.z, 0.0, self.world.height)
+        agents = list(self.agents.values())
+        animals = list(self.animals.values())
+        for ag, an in self._iter_cross_spatial_pairs(agents, animals, SOCIAL_AVOIDANCE_CELL):
+            self._apply_pair_separation(ag, an)
 
     def _orient_and_animate_agents(self, dt: float):
         """
@@ -2158,6 +2679,8 @@ class MiniMatrixEngine:
         return (dx * dx + dz * dz) <= (MAX_HUD_DISTANCE * MAX_HUD_DISTANCE)
 
     def _draw_agent_hud(self, agent: AgentEntity):
+        if agent.agent_id in self.hidden_agent_ids:
+            return
         px, pz = agent.transform.pos.x, agent.transform.pos.z
 
         if not self._within_hud_lod(px, pz, force=agent.selected):
@@ -2316,6 +2839,8 @@ class MiniMatrixEngine:
 
     def _draw_vfx(self):
         for ring in self.vfx:
+            if not self._within_render_lod(ring.x, ring.z, MAX_VFX_DISTANCE):
+                continue
             a = ring.alpha()
             r = ring.radius()
             col = (ring.color[0], ring.color[1], ring.color[2])
@@ -2325,6 +2850,8 @@ class MiniMatrixEngine:
         if not (self._hud_text_enabled and SHOW_DAMAGE_NUMBERS):
             return
         for dn in self.numbers:
+            if not self._within_render_lod(dn.x, dn.z, MAX_VFX_DISTANCE):
+                continue
             alpha = clamp(dn.alpha(), 0.0, 1.0)
             val = dn.value
             sign = "+" if val > 0 else ""
@@ -2411,9 +2938,16 @@ class MiniMatrixEngine:
         glLineWidth(1.5)
         _draw_ring(px, pz, radius=fov_range, y=0.021, rgb=(0.2, 0.8, 1.0), width=1.2, alpha=0.25)
 
-    def _draw_target_lines(self):
+    def _draw_target_lines(
+        self,
+        visible_agents: Optional[List[AgentEntity]] = None,
+        visible_animals: Optional[List[AnimalEntity]] = None,
+    ):
         if not SHOW_TARGET_LINES:
             return
+
+        animals = visible_animals if visible_animals is not None else list(self.animals.values())
+        agents = visible_agents if visible_agents is not None else list(self.agents.values())
 
         def _pos_of(entity_id: str) -> Optional[Tuple[float, float]]:
             if entity_id in self.agents:
@@ -2424,8 +2958,15 @@ class MiniMatrixEngine:
                 return p.x, p.z
             return None
 
+        def _line_is_relevant(sx: float, sz: float, tx: float, tz: float, force: bool = False) -> bool:
+            if self._within_render_lod(sx, sz, MAX_TARGET_LINE_DISTANCE, force=force):
+                return True
+            if self._within_render_lod(tx, tz, MAX_TARGET_LINE_DISTANCE, force=force):
+                return True
+            return self._within_render_lod((sx + tx) * 0.5, (sz + tz) * 0.5, MAX_TARGET_LINE_DISTANCE, force=force)
+
         glLineWidth(1.5)
-        for an in self.animals.values():
+        for an in animals:
             # подхватить разные ключи цели
             tgt = an.public_state.get("target_id") \
                   or an.public_state.get("attack_target_id") \
@@ -2437,6 +2978,8 @@ class MiniMatrixEngine:
                     continue
                 sx, sz = an.transform.pos.x, an.transform.pos.z
                 tx, tz = tp
+                if not _line_is_relevant(sx, sz, tx, tz, force=an.selected):
+                    continue
                 # цвет: красный для агрессивных, голубой — если приручён идёт к хозяину
                 if an.anim.tamed:
                     col = (0.2, 0.8, 1.0, 0.65)
@@ -2449,7 +2992,9 @@ class MiniMatrixEngine:
                 glEnd()
 
         # для агентов — если есть явная "target_id" в public_state
-        for ag in self.agents.values():
+        for ag in agents:
+            if ag.agent_id in self.hidden_agent_ids:
+                continue
             tgt = ag.public_state.get("target_id") or ag.public_state.get("target")
             if isinstance(tgt, str):
                 tp = _pos_of(tgt)
@@ -2457,6 +3002,8 @@ class MiniMatrixEngine:
                     continue
                 sx, sz = ag.transform.pos.x, ag.transform.pos.z
                 tx, tz = tp
+                if not _line_is_relevant(sx, sz, tx, tz, force=ag.selected):
+                    continue
                 glColor4f(1.0, 1.0, 0.2, 0.75)
                 glBegin(GL_LINES)
                 glVertex3f(sx, 1.8, sz)
@@ -2479,18 +3026,29 @@ class MiniMatrixEngine:
         self._draw_sun()
 
         # пол/сетка
-        _draw_floor_grid(self.world.width, self.world.height)
+        _draw_floor_grid(self.world.width, self.world.height, cam_pos=self._cam_pos)
+
+        (
+            visible_static,
+            visible_zones,
+            visible_agents,
+            detailed_agent_ids,
+            visible_animals,
+            detailed_animal_ids,
+        ) = self._collect_render_lists()
 
         # окружение
-        for inst in self.static_meshes:
+        for inst in visible_static:
             _draw_static_mesh(inst, self._time_accum)
 
         # зоны с сервера
-        for zone in self.world.zones:
+        for zone in visible_zones:
             _draw_disc_zone(zone.x, zone.z, zone.radius, zone.kind, y=0.02)
 
         # цели агентов (кольца)
-        for agent in self.agents.values():
+        for agent in visible_agents:
+            if not self._within_render_lod(agent.goal.x, agent.goal.z, MAX_GOAL_RING_DISTANCE, force=agent.selected):
+                continue
             _draw_ring(
                 agent.goal.x,
                 agent.goal.z,
@@ -2501,20 +3059,38 @@ class MiniMatrixEngine:
             )
 
         # вспомогательные гизмы
-        self._draw_target_lines()
-        for agent in self.agents.values():
+        self._draw_target_lines(visible_agents=visible_agents, visible_animals=visible_animals)
+        for agent in visible_agents:
             self._draw_agent_fov(agent)
 
         # агенты
-        for agent in self.agents.values():
-            draw_agent_humanoid(agent, self._time_accum)
-            draw_agent_direction_arrow(agent)
+        for agent in visible_agents:
+            if agent.agent_id in detailed_agent_ids:
+                draw_agent_humanoid(agent, self._time_accum)
+            else:
+                draw_agent_impostor(agent, self._time_accum)
+            if agent.agent_id in detailed_agent_ids and self._within_render_lod(
+                agent.transform.pos.x,
+                agent.transform.pos.z,
+                MAX_DIRECTION_ARROW_DISTANCE,
+                force=agent.selected,
+            ):
+                draw_agent_direction_arrow(agent)
             self._draw_agent_hud(agent)
 
         # звери
-        for animal in self.animals.values():
-            draw_animal_quadruped(animal, self._time_accum)
-            draw_animal_direction_arrow(animal)
+        for animal in visible_animals:
+            if animal.animal_id in detailed_animal_ids:
+                draw_animal_quadruped(animal, self._time_accum)
+            else:
+                draw_animal_impostor(animal, self._time_accum)
+            if animal.animal_id in detailed_animal_ids and self._within_render_lod(
+                animal.transform.pos.x,
+                animal.transform.pos.z,
+                MAX_DIRECTION_ARROW_DISTANCE,
+                force=animal.selected,
+            ):
+                draw_animal_direction_arrow(animal)
             self._draw_animal_hud(animal)
 
         # эффекты

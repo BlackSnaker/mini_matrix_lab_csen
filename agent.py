@@ -6,6 +6,7 @@ import math
 import random
 
 import config
+from memory import AgentMemory
 from mind_core import ConsciousnessBlock
 
 try:
@@ -79,6 +80,71 @@ def _world_size(world) -> Optional[Tuple[float, float]]:
         except Exception:
             continue
     return None
+
+
+def _pct_value(x: Any, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+    except Exception:
+        v = float(default)
+    if v <= 1.5:
+        v *= 100.0
+    return max(0.0, min(100.0, v))
+
+
+def _tick_or_none(x: Any) -> Optional[int]:
+    if x is None:
+        return None
+    try:
+        return int(x)
+    except Exception:
+        return None
+
+
+def _belief_public_view(b: Any) -> Dict[str, Any]:
+    if isinstance(b, dict):
+        return {
+            "if": str(b.get("if") or b.get("condition") or ""),
+            "then": str(b.get("then") or b.get("conclusion") or ""),
+            "strength": float(b.get("strength", 0.0) or 0.0),
+        }
+    return {
+        "if": str(getattr(b, "condition", "")),
+        "then": str(getattr(b, "conclusion", "")),
+        "strength": float(getattr(b, "strength", 0.0) or 0.0),
+    }
+
+
+def _memory_public_view(ev: Any) -> Dict[str, Any]:
+    if isinstance(ev, dict):
+        data = ev.get("data")
+        if not isinstance(data, dict):
+            data = {
+                k: v for k, v in ev.items()
+                if k not in ("type", "etype", "kind", "tick", "level", "actor", "pos", "private")
+            }
+        pos = ev.get("pos")
+        if isinstance(pos, list):
+            pos = tuple(pos)
+        return {
+            "type": str(ev.get("type") or ev.get("etype") or ev.get("kind") or "event"),
+            "tick": _tick_or_none(ev.get("tick")),
+            "level": str(ev.get("level", "info")),
+            "actor": ev.get("actor"),
+            "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+            "data": dict(data),
+        }
+    pos = getattr(ev, "pos", None)
+    if isinstance(pos, list):
+        pos = tuple(pos)
+    return {
+        "type": str(getattr(ev, "etype", getattr(ev, "type", "event"))),
+        "tick": _tick_or_none(getattr(ev, "tick", None)),
+        "level": str(getattr(ev, "level", "info")),
+        "actor": getattr(ev, "actor", None),
+        "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+        "data": dict(getattr(ev, "data", {}) or {}),
+    }
 
 
 # ---------- INTROSPECTION SHIM FOR BRAIN (beliefs + neural graph) ----------
@@ -231,17 +297,23 @@ class Agent:
     y: float = 0.0
     goal_x: float = 0.0
     goal_y: float = 0.0
+    vx: float = 0.0
+    vy: float = 0.0
 
     # витальные параметры
     health: float = 100.0         # 0..100
     energy: float = 1.0           # 0..1
     hunger: float = 0.0           # 0..1 (0 — сыт)
     fear: float = 0.0             # 0..1
+    alive: bool = True
     age_ticks: int = 0
     cause_of_death: Optional[str] = None
 
     # мозг
     brain: Optional[ConsciousnessBlock] = None
+    memory: AgentMemory = field(default_factory=AgentMemory, repr=False)
+    known_hazards: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    danger_zones: List[Tuple[float, float, float]] = field(default_factory=list, repr=False)
 
     # боёвка
     attack_power: float = field(default_factory=lambda: float(getattr(config, "AGENT_BASE_ATTACK_POWER", 8.0)))
@@ -257,18 +329,34 @@ class Agent:
     # движение (fallback)
     move_speed: float = field(default_factory=lambda: float(getattr(config, "AGENT_BASE_SPEED", 3.0)))
     arrive_eps: float = 0.6  # радиус «прибыли к цели»
+    _manual_control_until_tick: int = field(default=-10**9, repr=False)
+    _manual_control_source: Optional[str] = field(default=None, repr=False)
+    _manual_facing_x: float = field(default=1.0, repr=False)
+    _manual_facing_y: float = field(default=0.0, repr=False)
 
     # локальные флаги, чтобы не спамить одинаковые beliefs
     _belief_flags: Dict[str, bool] = field(default_factory=dict)
 
+    # lineage / social training metadata
+    generation: int = 0
+    parents: List[str] = field(default_factory=list)
+    lineage_role: str = "balanced"
+    born_tick: int = 0
+    tags: List[str] = field(default_factory=list)
+    wolf_tame_skill: float = 0.0
+    wolf_tame_successes: int = 0
+
     # служебное
     id: str = field(init=False)  # == agent_id
+    _last_brain_error: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self):
         self.id = self.agent_id
         if self.brain is None:
             self.brain = self._init_brain()
         self._apply_persona_defaults()
+        self.alive = bool(self.alive) and self.health > 0.0
+        self._sync_memory_from_brain()
 
     # ----------- BRAIN INIT -----------
     def _init_brain(self) -> ConsciousnessBlock:
@@ -314,6 +402,159 @@ class Agent:
         elif "loner" in p or "одино" in p:
             self.fear = min(1.0, self.fear + 0.1)
 
+    def _sync_memory_from_brain(self) -> None:
+        if self.memory.get_recent(1):
+            return
+        tail = list(getattr(getattr(self, "brain", None), "memory_tail", []) or [])
+        if tail:
+            self.memory.extend_from_any(tail)
+
+    def _remember_event(
+        self,
+        event_type: str,
+        data: Dict[str, Any],
+        *,
+        tick: Optional[int] = None,
+        private: bool = False,
+        level: Optional[str] = None,
+        actor: Optional[str] = None,
+        pos: Optional[Tuple[float, float]] = None,
+    ) -> None:
+        payload = dict(data or {})
+        if pos is not None:
+            payload.setdefault("pos", pos)
+        if actor:
+            payload.setdefault("actor", actor)
+        tick_val = _tick_or_none(tick)
+        self.memory.remember(
+            event_type,
+            payload,
+            tick=tick_val,
+            private=private,
+            level=level,
+            actor=actor,
+            pos=pos,
+        )
+        try:
+            if self.brain and hasattr(self.brain, "record_event") and tick_val is not None:
+                self.brain.record_event(tick_val, event_type, payload)
+            elif self.brain and hasattr(self.brain, "add_memory"):
+                ev: Dict[str, Any] = {
+                    "type": event_type,
+                    "tick": tick_val,
+                    "data": payload,
+                    "private": private,
+                }
+                if level is not None:
+                    ev["level"] = level
+                if actor is not None:
+                    ev["actor"] = actor
+                if pos is not None:
+                    ev["pos"] = pos
+                self.brain.add_memory(ev)
+        except Exception:
+            pass
+
+    def _update_velocity(self, old_x: float, old_y: float, dt: float) -> None:
+        if dt <= 1e-6:
+            self.vx = 0.0
+            self.vy = 0.0
+            return
+        self.vx = (self.x - old_x) / dt
+        self.vy = (self.y - old_y) / dt
+
+    def _refresh_world_knowledge(self, world) -> None:
+        now = _world_time_int(world)
+
+        def _upsert(hid: str, *, kind: str, x: float, y: float, radius: float, danger: float) -> None:
+            self.known_hazards[hid] = {
+                "id": hid,
+                "kind": kind,
+                "x": float(x),
+                "y": float(y),
+                "radius": max(0.5, float(radius)),
+                "danger": max(0.0, float(danger)),
+                "last_seen": int(now),
+            }
+
+        for obj in getattr(world, "objects", []) or []:
+            kind = str(getattr(obj, "kind", "")).lower()
+            if "hazard" not in kind and "danger" not in kind and "threat" not in kind:
+                continue
+            ox = float(getattr(obj, "x", 0.0))
+            oy = float(getattr(obj, "y", 0.0))
+            radius = float(getattr(obj, "radius", 2.0))
+            level = float(getattr(obj, "danger_level", radius))
+            hid = str(getattr(obj, "obj_id", f"hazard@{round(ox, 1)}:{round(oy, 1)}"))
+            _upsert(hid, kind=kind or "hazard", x=ox, y=oy, radius=radius, danger=max(radius, level))
+
+        animals = getattr(world, "animals", {}) or {}
+        if isinstance(animals, dict):
+            animal_items = list(animals.values())
+        else:
+            animal_items = list(animals)
+        for ani in animal_items:
+            if ani is None:
+                continue
+            species = getattr(ani, "species", None)
+            aggressive = bool(getattr(species, "aggressive", False))
+            alive = bool(getattr(ani, "is_alive", lambda: float(getattr(ani, "hp", 1.0)) > 0.0)())
+            if not aggressive or not alive:
+                continue
+            ax = float(getattr(ani, "x", 0.0))
+            ay = float(getattr(ani, "y", 0.0))
+            hid = str(getattr(ani, "uid", f"animal@{round(ax, 1)}:{round(ay, 1)}"))
+            _upsert(hid, kind="animal", x=ax, y=ay, radius=2.5, danger=3.0)
+
+        cutoff = int(now) - 600
+        self.known_hazards = {
+            hid: hz for hid, hz in self.known_hazards.items()
+            if int(hz.get("last_seen", now)) >= cutoff
+        }
+
+        zones: List[Tuple[float, float, float]] = []
+
+        def _append_zone(px: float, py: float, weight: float) -> None:
+            for i, (zx, zy, zw) in enumerate(zones):
+                if _dist2(px, py, zx, zy) <= 9.0:
+                    zones[i] = ((zx + px) * 0.5, (zy + py) * 0.5, max(zw, weight))
+                    return
+            zones.append((px, py, weight))
+
+        for hz in self.known_hazards.values():
+            _append_zone(float(hz["x"]), float(hz["y"]), max(1.0, float(hz["radius"])))
+
+        for tm in getattr(getattr(self, "brain", None), "trauma_map", []) or []:
+            pos = tm.get("pos")
+            if not isinstance(pos, (list, tuple)) or len(pos) != 2:
+                continue
+            _append_zone(float(pos[0]), float(pos[1]), max(1.0, float(tm.get("intensity", 0.0)) * 6.0))
+
+        self.danger_zones = zones[-30:]
+
+    def _public_memory_tail(self) -> List[Dict[str, Any]]:
+        tail = self.memory.dump_public_view(tail=8)
+        if tail:
+            return tail
+        out: List[Dict[str, Any]] = []
+        for ev in list(getattr(getattr(self, "brain", None), "memory_tail", []) or [])[-8:]:
+            out.append(_memory_public_view(ev))
+        return out
+
+    def _public_mind_state(self) -> Dict[str, Any]:
+        brain = self.brain
+        if brain is None:
+            return {}
+        try:
+            data = dict(brain.export_public_state_for_ui() or {})
+        except Exception:
+            data = {}
+        beliefs = data.get("beliefs", getattr(brain, "beliefs", [])) or []
+        mem_tail = data.get("memory_tail", getattr(brain, "memory_tail", [])) or []
+        data["beliefs"] = [_belief_public_view(b) for b in list(beliefs)[-20:]]
+        data["memory_tail"] = [_memory_public_view(ev) for ev in list(mem_tail)[-20:]]
+        return data
+
     # ----------- COMBAT -----------
     def can_attack(self, now_tick: int) -> bool:
         return (now_tick - self._last_attack_tick) >= int(self.attack_cooldown)
@@ -339,10 +580,31 @@ class Agent:
 
         if self.health <= 0.0 and not self.cause_of_death:
             self.cause_of_death = f"by:{attacker_id or 'unknown'}"
+        self.alive = self.health > 0.0
+
+        self._remember_event(
+            "damage",
+            {
+                "amount": dmg,
+                "by": attacker_id,
+                "hp_before": health_before,
+                "hp_after": self.health,
+            },
+            tick=world_tick,
+            actor=attacker_id,
+            level="critical" if self.health <= 0.0 else "warning",
+        )
+        if not self.alive:
+            self._remember_event(
+                "death",
+                {"reason": self.cause_of_death or "damage"},
+                tick=world_tick,
+                level="critical",
+            )
 
         try:
             if self.brain and hasattr(self.brain, "on_pain"):
-                self.brain.on_pain(source_id=attacker_id, amount=dmg)
+                self.brain.on_pain(source_id=attacker_id, amount=dmg, pos=(self.x, self.y), tick=world_tick)
         except Exception:
             pass
 
@@ -357,6 +619,20 @@ class Agent:
             self._aggro_memory[a_uid] = now
 
         self.fear = _clamp01(self.fear + min(0.5, float(damage) / 100.0))
+        self.alive = self.health > 0.0
+        self._remember_event(
+            "animal_attack",
+            {
+                "damage": float(damage),
+                "species": species_id,
+                "hp_before": float(health_before),
+                "hp_after": float(self.health),
+            },
+            tick=now,
+            actor=a_uid or species_id,
+            pos=(float(self.x), float(self.y)),
+            level="critical" if self.health <= 0.0 else "warning",
+        )
 
         # убеждение: «Если рядом зверь → отступай/ищи безопасную зону»
         self._push_belief(
@@ -373,7 +649,7 @@ class Agent:
                 if self._should_counterattack_after_hit():
                     # Осмысленная контратака: держим врага в зоне мили, а не уходим автоматически.
                     # NEW: вместо «всегда отступать» опытный/уверенный агент может пойти в бой.
-                    self.set_goal(ax, ay, world_size=bounds)
+                    self.set_goal(ax, ay, world_size=bounds, reason="counterattack", tick=now)
                     self._push_belief(
                         cond="animal_attacks_often",
                         concl="counterattack_if_ready",
@@ -387,7 +663,7 @@ class Agent:
                     retreat = 6.0 + 6.0 * random.random()
                     gx = self.x + vx * retreat
                     gy = self.y + vy * retreat
-                    self.set_goal(gx, gy, world_size=bounds)
+                    self.set_goal(gx, gy, world_size=bounds, reason="retreat", tick=now)
         except Exception:
             pass
 
@@ -396,7 +672,14 @@ class Agent:
 
         try:
             if self.brain and hasattr(self.brain, "on_threat"):
-                self.brain.on_threat(kind="animal", attacker_id=a_uid, species=species_id, damage=float(damage))
+                self.brain.on_threat(
+                    kind="animal",
+                    attacker_id=a_uid,
+                    species=species_id,
+                    damage=float(damage),
+                    pos=(self.x, self.y),
+                    tick=now,
+                )
             elif self.brain and hasattr(self.brain, "add_memory"):
                 self.brain.add_memory({
                     "type": "attack_received",
@@ -434,18 +717,92 @@ class Agent:
 
     # ----------- LIFE -----------
     def is_alive(self) -> bool:
-        return self.health > 0.0
+        return bool(self.alive) and self.health > 0.0
 
-    def set_goal(self, x: float, y: float, world_size: Optional[Tuple[float, float]] = None) -> None:
+    def set_goal(
+        self,
+        x: float,
+        y: float,
+        world_size: Optional[Tuple[float, float]] = None,
+        reason: Optional[str] = None,
+        tick: Optional[int] = None,
+    ) -> None:
         gx, gy = float(x), float(y)
         if world_size:
             W, H = world_size
             gx = max(0.0, min(W, gx))
             gy = max(0.0, min(H, gy))
+        changed = (abs(self.goal_x - gx) > 1e-6) or (abs(self.goal_y - gy) > 1e-6)
         self.goal_x, self.goal_y = gx, gy
+        if changed and reason:
+            event_type = "external_command" if "command" in reason else "new_goal"
+            self._remember_event(
+                event_type,
+                {"goal": (gx, gy), "reason": reason},
+                tick=tick,
+                actor="self",
+                pos=(gx, gy),
+            )
 
     def distance_to(self, x: float, y: float) -> float:
         return math.hypot(self.x - float(x), self.y - float(y))
+
+    def mark_manual_control(
+        self,
+        *,
+        tick: Optional[int],
+        hold_ticks: int = 2,
+        source: str = "player",
+    ) -> None:
+        base_tick = _tick_or_none(tick)
+        if base_tick is None:
+            base_tick = 0
+        self._manual_control_until_tick = max(
+            int(self._manual_control_until_tick),
+            int(base_tick) + max(1, int(hold_ticks)),
+        )
+        self._manual_control_source = str(source or "manual")
+
+    def is_manual_control_active(self, world: Any = None, *, tick: Optional[int] = None) -> bool:
+        now = _tick_or_none(tick)
+        if now is None and world is not None:
+            now = _world_time_int(world)
+        if now is None:
+            now = 0
+        return int(now) <= int(self._manual_control_until_tick)
+
+    def apply_manual_control(
+        self,
+        x: float,
+        y: float,
+        *,
+        dt: float,
+        world_size: Optional[Tuple[float, float]] = None,
+        facing: Optional[Tuple[float, float]] = None,
+        tick: Optional[int] = None,
+        hold_ticks: int = 2,
+        source: str = "player",
+    ) -> float:
+        gx, gy = float(x), float(y)
+        if world_size:
+            W, H = world_size
+            gx = max(0.0, min(float(W), gx))
+            gy = max(0.0, min(float(H), gy))
+        old_x, old_y = float(self.x), float(self.y)
+        self.x = gx
+        self.y = gy
+        self.goal_x = gx
+        self.goal_y = gy
+        self._update_velocity(old_x, old_y, max(float(dt), 1e-6))
+        fx, fy = (float(self.vx), float(self.vy))
+        if facing is not None:
+            fx, fy = float(facing[0]), float(facing[1])
+        n = math.hypot(fx, fy)
+        if n > 1e-6:
+            self._manual_facing_x = fx / n
+            self._manual_facing_y = fy / n
+        self.mark_manual_control(tick=tick, hold_ticks=hold_ticks, source=source)
+        return math.hypot(self.x - old_x, self.y - old_y)
 
     def _in_safe_zone(self, world) -> bool:
         try:
@@ -465,9 +822,21 @@ class Agent:
                     setattr(self.brain, "_last_world", world_ctx)
                 except Exception:
                     pass
+                if hasattr(self.brain, "absorb_recent_memory_summary"):
+                    self.brain.absorb_recent_memory_summary(self.memory.summarize_recent())
                 self.brain.tick_update(agent_ref=self, world_ref=world_ctx)
-        except Exception:
-            pass
+                self._last_brain_error = None
+        except Exception as exc:
+            err = str(exc)
+            if err != self._last_brain_error:
+                self._remember_event(
+                    "brain_error",
+                    {"error": err},
+                    tick=_world_time_int(world_ctx) if world_ctx is not None else None,
+                    private=True,
+                    level="warning",
+                )
+            self._last_brain_error = err
 
     def soft_needs_update(self, dt: float = 1.0, in_safe: bool = False) -> None:
         self.age_ticks += 1
@@ -499,15 +868,33 @@ class Agent:
         Иначе — простая «движуха» к цели + выбор новой цели по прибытию.
         Возвращаем пройденную дистанцию (для простого поощрения).
         """
+        dt = _world_dt(world)
+        old_x, old_y = self.x, self.y
+
+        if self.is_manual_control_active(world):
+            self.goal_x = self.x
+            self.goal_y = self.y
+            return 0.0
+
         if getattr(world, "handles_agent_motion", False):
+            self.vx = 0.0
+            self.vy = 0.0
             return 0.0
         if hasattr(world, "move_agent"):
             try:
-                return float(world.move_agent(self, _world_dt(world)) or 0.0)
+                moved = float(world.move_agent(self, dt) or 0.0)
+                self._update_velocity(old_x, old_y, dt)
+                if moved > 1e-3:
+                    self._remember_event(
+                        "move",
+                        {"from": (old_x, old_y), "to": (self.x, self.y)},
+                        tick=_world_time_int(world),
+                        pos=(self.x, self.y),
+                    )
+                return moved
             except Exception:
                 pass
 
-        dt = _world_dt(world)
         bounds = _world_size(world)
 
         # цель достигнута → выбираем новую
@@ -533,6 +920,8 @@ class Agent:
         dx, dy = self.goal_x - self.x, self.goal_y - self.y
         dist = math.hypot(dx, dy)
         if dist <= 1e-6:
+            self.vx = 0.0
+            self.vy = 0.0
             return 0.0
 
         speed = self.move_speed
@@ -543,7 +932,7 @@ class Agent:
         step = max(0.0, speed * dt)
         if step >= dist:
             self.x, self.y = self.goal_x, self.goal_y
-            return dist
+            moved = dist
         else:
             k = step / dist
             self.x += dx * k
@@ -552,7 +941,17 @@ class Agent:
                 W, H = bounds
                 self.x = max(0.0, min(W, self.x))
                 self.y = max(0.0, min(H, self.y))
-            return step
+            moved = step
+
+        self._update_velocity(old_x, old_y, dt)
+        if moved > 1e-3:
+            self._remember_event(
+                "move",
+                {"from": (old_x, old_y), "to": (self.x, self.y)},
+                tick=_world_time_int(world),
+                pos=(self.x, self.y),
+            )
+        return moved
 
     def _brain_step_reward(self, world, moved: float) -> None:
         """
@@ -616,6 +1015,7 @@ class Agent:
         in_safe = self._in_safe_zone(world)
 
         self.soft_needs_update(dt=dt, in_safe=in_safe)
+        self._refresh_world_knowledge(world)
         self.brain_tick(world_ctx=world)
 
         moved = self._fallback_move(world)  # движение (если мир не двигает)
@@ -695,17 +1095,38 @@ class Agent:
             pass
 
     # ----------- PUBLIC SNAPSHOT -----------
-    def to_public_snapshot(self) -> Dict[str, Any]:
-        return {
+    def serialize_public_state(self) -> Dict[str, Any]:
+        facing_x = float(self._manual_facing_x)
+        facing_y = float(self._manual_facing_y)
+        if math.hypot(self.vx, self.vy) > 1e-6:
+            n = math.hypot(self.vx, self.vy)
+            facing_x = float(self.vx) / n
+            facing_y = float(self.vy) / n
+        out = {
             "id": self.id,
             "name": self.name,
             "alive": self.is_alive(),
             "pos": {"x": float(self.x), "y": float(self.y)},
+            "vel": {"x": float(self.vx), "y": float(self.vy)},
             "goal": {"x": float(self.goal_x), "y": float(self.goal_y)},
+            "facing": {"x": facing_x, "y": facing_y},
             "health": float(self.health),
-            "energy": float(self.energy * 100.0),
-            "hunger": float(self.hunger * 100.0),
-            "fear": float(self.fear),
+            "energy": _pct_value(self.energy, 100.0),
+            "hunger": _pct_value(self.hunger, 0.0),
+            "fear": float(_clamp01(self.fear)),
             "age_ticks": int(self.age_ticks),
             "cause_of_death": self.cause_of_death,
+            "manual_control_source": self._manual_control_source,
+            "danger_zones_count": int(len(self.danger_zones)),
+            "hazards_known": int(len(self.known_hazards)),
+            "memory_tail": self._public_memory_tail(),
+            "mind": self._public_mind_state(),
+            "tags": list(self.tags),
+            "generation": int(self.generation),
+            "parents": list(self.parents),
+            "lineage_role": str(self.lineage_role),
         }
+        return out
+
+    def to_public_snapshot(self) -> Dict[str, Any]:
+        return self.serialize_public_state()

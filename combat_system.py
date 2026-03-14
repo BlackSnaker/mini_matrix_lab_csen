@@ -20,6 +20,34 @@ def _dist2(ax: float, ay: float, bx: float, by: float) -> float:
     return dx * dx + dy * dy
 
 
+def _looks_like_unit_meter(v: Any) -> bool:
+    try:
+        x = float(v)
+    except Exception:
+        return False
+    return 0.0 <= x <= 1.5
+
+
+def _meter_get(ent: Any, attr: str, default: float) -> float:
+    raw = getattr(ent, attr, default)
+    try:
+        val = float(raw)
+    except Exception:
+        val = float(default)
+    if _looks_like_unit_meter(raw):
+        val *= 100.0
+    return _clamp(val, 0.0, 100.0)
+
+
+def _meter_set(ent: Any, attr: str, pct_value: float) -> None:
+    cur = getattr(ent, attr, None)
+    pct_value = _clamp(float(pct_value), 0.0, 100.0)
+    if cur is not None and _looks_like_unit_meter(cur):
+        setattr(ent, attr, pct_value / 100.0)
+    else:
+        setattr(ent, attr, pct_value)
+
+
 # === МОДЕЛЬ ВЕСОВ (очень легковесное «обучение») ===
 # Храним веса выбора действий в brain.behavior_rules["combat_weights"],
 # обновляем по принципу REINFORCE с простым базисом.
@@ -91,8 +119,10 @@ class CombatSystem:
 
         # гарантируем карманы
         if not hasattr(self.world, "animals") or getattr(self.world, "animals") is None:
-            self.world.animals = []
-        if not hasattr(self.world, "chat") or getattr(self.world, "chat") is None:
+            self.world.animals = {} if hasattr(self.world, "add_animal") else []
+        if hasattr(self.world, "chat_log") and isinstance(getattr(self.world, "chat_log"), list):
+            self.world.chat = self.world.chat_log
+        elif not hasattr(self.world, "chat") or getattr(self.world, "chat") is None:
             self.world.chat = []
 
     # --- публичные утилиты ---
@@ -101,14 +131,13 @@ class CombatSystem:
         W = float(getattr(self.world, "width", 100.0))
         H = float(getattr(self.world, "height", 100.0))
         cx, cy = around if around else (W * 0.5, H * 0.5)
-        arr = self._animals_list()
         for i in range(int(n)):
             ang = self.random.random() * math.tau
             rad = r * (0.5 + self.random.random())
             x = _clamp(cx + math.cos(ang) * rad, 0.0, W)
             y = _clamp(cy + math.sin(ang) * rad, 0.0, H)
             beast = self._make_animal(species=species, x=x, y=y)
-            arr.append(beast)
+            self._add_animal(beast)
         self._chat(f"[spawn] {n} {species}(s) около ({cx:.1f},{cy:.1f})")
 
     # --- основной шаг симуляции боя ---
@@ -183,10 +212,7 @@ class CombatSystem:
                 continue
             # шанс «разложиться»
             if self.random.random() < 0.05:
-                try:
-                    animals.remove(b)
-                except Exception:
-                    pass
+                self._remove_animal(b)
 
     # --- частные методы ---
 
@@ -201,18 +227,43 @@ class CombatSystem:
     def _animals_list(self) -> List[Any]:
         Z = getattr(self.world, "animals", None)
         if isinstance(Z, dict):
-            # переключим на list (проще управлять жизненным циклом)
-            lst = list(Z.values())
-            try:
-                self.world.animals = lst
-            except Exception:
-                pass
-            return lst
+            return list(Z.values())
         if isinstance(Z, list):
             return Z
         # создадим список
-        self.world.animals = []
+        self.world.animals = {} if hasattr(self.world, "add_animal") else []
+        Z = getattr(self.world, "animals", None)
+        if isinstance(Z, dict):
+            return list(Z.values())
         return self.world.animals
+
+    def _add_animal(self, beast: Any) -> None:
+        if hasattr(self.world, "add_animal"):
+            try:
+                self.world.add_animal(beast)
+                return
+            except Exception:
+                pass
+        Z = getattr(self.world, "animals", None)
+        if isinstance(Z, dict):
+            Z[getattr(beast, "uid", f"beast_{id(beast)}")] = beast
+        elif isinstance(Z, list):
+            Z.append(beast)
+        else:
+            self.world.animals = [beast]
+
+    def _remove_animal(self, beast: Any) -> None:
+        Z = getattr(self.world, "animals", None)
+        if isinstance(Z, dict):
+            uid = getattr(beast, "uid", None)
+            if uid in Z:
+                del Z[uid]
+            return
+        if isinstance(Z, list):
+            try:
+                Z.remove(beast)
+            except Exception:
+                pass
 
     def _make_animal(self, species: str, x: float, y: float) -> Any:
         class _Beast:  # минимальный контейнер совместимый со снапшотом
@@ -230,8 +281,9 @@ class CombatSystem:
 
     def _ensure_agent(self, a: Any) -> None:
         if not hasattr(a, "health"): setattr(a, "health", 100.0)
-        if not hasattr(a, "energy"): setattr(a, "energy", 100.0)
+        if not hasattr(a, "energy"): setattr(a, "energy", 1.0)
         if not hasattr(a, "fear"): setattr(a, "fear", 0.0)
+        if not hasattr(a, "hunger"): setattr(a, "hunger", 0.0)
         if not hasattr(a, "x"): setattr(a, "x", float(getattr(a, "pos_x", 0.0)))
         if not hasattr(a, "y"): setattr(a, "y", float(getattr(a, "pos_y", 0.0)))
         if not hasattr(a, "vx"): setattr(a, "vx", 0.0)
@@ -248,9 +300,17 @@ class CombatSystem:
         if not hasattr(b, "atk_cd"): setattr(b, "atk_cd", 0.0)
         if not hasattr(b, "species"):
             setattr(b, "species", type("_Spec", (), {"species_id": "beast", "aggressive": True, "tamable": False, "base_hp": 50.0})())
+        if not hasattr(b, "aggressive"):
+            setattr(b, "aggressive", bool(getattr(getattr(b, "species", None), "aggressive", True)))
         if not hasattr(b, "alive"): setattr(b, "alive", True)
 
     def _is_alive_agent(self, a: Any) -> bool:
+        alive_fn = getattr(a, "is_alive", None)
+        if callable(alive_fn):
+            try:
+                return bool(alive_fn())
+            except Exception:
+                pass
         alive = getattr(a, "alive", True)
         if callable(alive):
             try:
@@ -260,6 +320,12 @@ class CombatSystem:
         return bool(alive) and float(getattr(a, "health", 0.0)) > 0.0
 
     def _is_alive_animal(self, b: Any) -> bool:
+        alive_fn = getattr(b, "is_alive", None)
+        if callable(alive_fn):
+            try:
+                return bool(alive_fn())
+            except Exception:
+                pass
         alive = getattr(b, "alive", True)
         if callable(alive):
             try:
@@ -290,13 +356,23 @@ class CombatSystem:
         spd = float(getattr(beast, "speed", self.animal_speed))
         nx = bx + math.cos(ang) * spd * dt
         ny = by + math.sin(ang) * spd * dt
-        self._move_entity(beast, nx, ny)
+        self._move_entity(beast, nx, ny, dt)
 
-    def _move_entity(self, ent: Any, nx: float, ny: float) -> None:
+    def _move_entity(self, ent: Any, nx: float, ny: float, dt: float = 1.0) -> None:
         W = float(getattr(self.world, "width", 100.0))
         H = float(getattr(self.world, "height", 100.0))
-        setattr(ent, "x", _clamp(nx, 0.0, W))
-        setattr(ent, "y", _clamp(ny, 0.0, H))
+        ox = float(getattr(ent, "x", 0.0))
+        oy = float(getattr(ent, "y", 0.0))
+        px = _clamp(nx, 0.0, W)
+        py = _clamp(ny, 0.0, H)
+        setattr(ent, "x", px)
+        setattr(ent, "y", py)
+        denom = max(float(dt), 1e-6)
+        try:
+            setattr(ent, "vx", (px - ox) / denom)
+            setattr(ent, "vy", (py - oy) / denom)
+        except Exception:
+            pass
 
     def _nearby_animals(self, ag: Any, animals: List[Any], radius: float) -> List[Any]:
         ax, ay = float(getattr(ag, "x", 0.0)), float(getattr(ag, "y", 0.0))
@@ -344,13 +420,14 @@ class CombatSystem:
         return best
 
     def _recover_out_of_combat(self, ag: Any, dt: float) -> None:
-        e = float(getattr(ag, "energy", 100.0))
+        e = _meter_get(ag, "energy", 100.0)
         h = float(getattr(ag, "health", 100.0))
-        f = float(getattr(ag, "fear", 0.0))
-        setattr(ag, "energy", _clamp(e + 6.0 * dt, 0.0, 100.0))
-        setattr(ag, "fear", _clamp(f - 2.0 * dt, 0.0, 100.0))
+        f = _meter_get(ag, "fear", 0.0)
+        hunger = _meter_get(ag, "hunger", 0.0)
+        _meter_set(ag, "energy", e + 6.0 * dt)
+        _meter_set(ag, "fear", f - 2.0 * dt)
         # лёгкая регенерация, если не голоден и не боится
-        if getattr(ag, "hunger", 0.0) < 50.0 and f < 10.0:
+        if hunger < 50.0 and f < 10.0:
             setattr(ag, "health", _clamp(h + 1.0 * dt, 0.0, 100.0))
 
     # --- действия агента ---
@@ -387,7 +464,7 @@ class CombatSystem:
         dash = self.agent_speed * 1.6
         nx = ax + math.cos(ang) * dash * dt
         ny = ay + math.sin(ang) * dash * dt
-        self._move_entity(ag, nx, ny)
+        self._move_entity(ag, nx, ny, dt)
         # частичная награда за уклонение
         _Weights.update(ag, "dodge", reward=+0.3)
 
@@ -439,7 +516,7 @@ class CombatSystem:
     def _step_dir(self, ag: Any, ang: float, dt: float, speed: float) -> None:
         nx = float(getattr(ag, "x", 0.0)) + math.cos(ang) * speed * dt
         ny = float(getattr(ag, "y", 0.0)) + math.sin(ang) * speed * dt
-        self._move_entity(ag, nx, ny)
+        self._move_entity(ag, nx, ny, dt)
 
     # --- урон/смерть/награда ---
 
@@ -451,9 +528,10 @@ class CombatSystem:
         return float(getattr(b, "damage", self.animal_base_damage))
 
     def _deal_damage_to_animal(self, ag: Any, b: Any, dmg: float) -> None:
+        was_alive = self._is_alive_animal(b)
         hp = float(getattr(b, "hp", 0.0)) - max(0.0, dmg)
         setattr(b, "hp", hp)
-        if hp <= 0.0 and self._is_alive_animal(b):
+        if hp <= 0.0 and was_alive:
             setattr(b, "alive", False)
             self._chat(f"{getattr(ag, 'name', getattr(ag, 'id', 'agent'))} убил {self._animal_name(b)}")
             # сильная награда + рост навыка
@@ -474,12 +552,30 @@ class CombatSystem:
             # маленькая награда dodge за удачное уклонение
             _Weights.update(ag, "dodge", reward=+0.8)
             return
-        hp = float(getattr(ag, "health", 0.0)) - max(0.0, dmg)
-        setattr(ag, "health", hp)
-        setattr(ag, "fear", _clamp(float(getattr(ag, "fear", 0.0)) + dmg * 0.6, 0.0, 100.0))
+        hp_before = float(getattr(ag, "health", 0.0))
+        now_tick = int(getattr(self.world, "tick_count", 0))
+        delegated = False
+        if hasattr(ag, "receive_damage"):
+            try:
+                ag.receive_damage(max(0.0, dmg), attacker_id=getattr(b, "uid", None), world_tick=now_tick)
+                delegated = True
+            except Exception:
+                delegated = False
+        if delegated and hasattr(ag, "on_animal_attack"):
+            try:
+                ag.on_animal_attack(self.world, b, max(0.0, dmg), hp_before)
+            except Exception:
+                pass
+        if not delegated:
+            hp = hp_before - max(0.0, dmg)
+            setattr(ag, "health", hp)
+            _meter_set(ag, "fear", _meter_get(ag, "fear", 0.0) + dmg * 0.6)
+            if hp <= 0.0:
+                setattr(ag, "alive", False)
+        hp = float(getattr(ag, "health", hp_before))
         _Weights.update(ag, "attack", reward=-0.3)
         _Weights.update(ag, "flee", reward=+0.2)
-        if hp <= 0.0 and self._is_alive_agent(ag):
+        if hp <= 0.0 and not self._is_alive_agent(ag):
             setattr(ag, "alive", False)
             cod = f"killed_by_{self._animal_name(b)}"
             setattr(ag, "cause_of_death", cod)
@@ -499,6 +595,12 @@ class CombatSystem:
         return getattr(sp, "species_id", getattr(sp, "name", "beast"))
 
     def _chat(self, line: str) -> None:
+        if hasattr(self.world, "add_chat_line"):
+            try:
+                self.world.add_chat_line(str(line))
+                return
+            except Exception:
+                pass
         try:
             self.world.chat.append(str(line))
             # ограничим хвост

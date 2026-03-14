@@ -27,6 +27,7 @@ from OpenGL.GL import (
 from OpenGL.GLU import gluUnProject
 
 # наш движок
+from brain_visualizer import OrganicBrainView
 from engine3d import MiniMatrixEngine
 from env_lowpoly import build_lowpoly_village  # низкополигональная деревня
 
@@ -376,6 +377,9 @@ class SharedState(QtCore.QObject):
         mind_behavior_rules = mind_block.get("behavior_rules", {})
         mind_beliefs = mind_block.get("beliefs", [])
         mind_memory_tail = mind_block.get("memory_tail", [])
+        mind_trauma_map = mind_block.get("trauma_map", [])
+        mind_curiosity_charge = mind_block.get("curiosity_charge", None)
+        mind_last_thought = mind_block.get("last_thought", None)
 
         cmb = st.get("combat", {}) or {}
         combat_state = cmb.get("state")
@@ -393,21 +397,30 @@ class SharedState(QtCore.QObject):
             "health": hp,
             "energy": energy,
             "hunger": hunger,
+            "tick": int(self.tick),
             "age_ticks": age,
             "danger_zones_count": dz_count,
             "hazards_known": hz_known,
             "memory_tail": memory_tail,
             "alive": bool(alive_flag),
             "cause_of_death": cause_of_death,
+            "mind_block": mind_block,
             "mind_survival_score": mind_survival_score,
             "mind_drive": mind_drive,
             "mind_behavior_rules": mind_behavior_rules,
             "mind_beliefs": mind_beliefs,
             "mind_memory_tail": mind_memory_tail,
+            "mind_trauma_map": mind_trauma_map,
+            "mind_curiosity_charge": mind_curiosity_charge,
+            "mind_last_thought": mind_last_thought,
             "combat_state": combat_state,
             "combat_skill": combat_skill,
             "combat_enemy_id": combat_enemy_id,
             "combat_just_hit": combat_just_hit,
+            "generation": int(st.get("generation", 0) or 0),
+            "parents": list(st.get("parents", []) or []),
+            "lineage_role": str(st.get("lineage_role", "balanced") or "balanced"),
+            "tags": list(st.get("tags", []) or []),
         }
 
 
@@ -1031,6 +1044,10 @@ class MindWidget(QtWidgets.QWidget):
         self.lblHeader.setStyleSheet("color:#eee;")
         outer.addWidget(self.lblHeader)
 
+        self.liveBrain = OrganicBrainView()
+        self.liveBrain.setMinimumHeight(340)
+        outer.addWidget(self.liveBrain, 0)
+
         # краткая статистика
         assoc_frame = QtWidgets.QFrame()
         assoc_frame.setStyleSheet("""
@@ -1158,6 +1175,7 @@ class MindWidget(QtWidgets.QWidget):
     def refresh(self):
         data = self.shared.get_selected_agent_debug()
         if not data:
+            self.liveBrain.clear()
             self.lblDangerZones.setText("danger_zones_count: –")
             self.lblHazardsKnown.setText("hazards_known: –")
             self.lblDriveSummary.setText("drive: –")
@@ -1167,6 +1185,7 @@ class MindWidget(QtWidgets.QWidget):
             self.memView.setPlainText("(агент не выбран)")
             return
 
+        self.liveBrain.update_from_debug(data, tick=self.shared.get_tick())
         self.lblDangerZones.setText(f"danger_zones_count: {data.get('danger_zones_count', 0)}")
         self.lblHazardsKnown.setText(f"hazards_known: {data.get('hazards_known', 0)}")
         drive = data.get("mind_drive", "–")

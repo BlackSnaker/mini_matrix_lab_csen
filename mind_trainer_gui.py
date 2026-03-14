@@ -54,6 +54,7 @@ from world import World, Agent, WorldObject
 from mind_core import ConsciousnessBlock
 from brain_io import save_brain
 from animals import Animal as AnimalSim, AnimalSpecies
+from brain_visualizer import OrganicBrainView
 from learning_insights import AgentLearningSnapshot, capture_learning_snapshot, diff_learning
 
 
@@ -75,6 +76,13 @@ def _safe_float(v: Any, fallback: float = 0.0) -> float:
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def _resource_pct(v: Any, fallback: float = 0.0) -> int:
+    x = _safe_float(v, fallback)
+    if x <= 1.5:
+        x *= 100.0
+    return int(_clamp(x, 0.0, 100.0))
 
 
 def _to_text(obj: Any) -> str:
@@ -1127,6 +1135,11 @@ class AgentBrainWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.trainer = trainer
         self.lang = "ru"
+        self._refresh_pending = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(75)
+        self._refresh_timer.timeout.connect(self._flush_refresh)
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8); outer.setSpacing(8)
@@ -1188,6 +1201,10 @@ class AgentBrainWidget(QtWidgets.QWidget):
 
         outer.addWidget(statsFrame)
 
+        self.liveBrain = OrganicBrainView()
+        self.liveBrain.setMinimumHeight(360)
+        outer.addWidget(self.liveBrain, 0)
+
         self.lblBehaviorTitle = QtWidgets.QLabel("Мозг / Поведенческие веса:")
         outer.addWidget(self.lblBehaviorTitle, 0, Qt.AlignLeft)
         self.behaviorText = QtWidgets.QTextEdit(); self.behaviorText.setReadOnly(True)
@@ -1241,15 +1258,29 @@ class AgentBrainWidget(QtWidgets.QWidget):
         outer.addStretch(1)
 
         self.trainer.agent_list_changed.connect(self.rebuild_agent_list)
-        self.trainer.world_changed.connect(self.refresh_all)
+        self.trainer.world_changed.connect(self.schedule_refresh)
         self.trainer.epoch_changed.connect(self.rebuild_agent_list)
 
         self.set_language(self.lang)
         self.rebuild_agent_list()
         self.refresh_all()
 
+    @Slot()
+    def schedule_refresh(self):
+        self._refresh_pending = True
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start()
+
+    @Slot()
+    def _flush_refresh(self):
+        if not self._refresh_pending:
+            return
+        self._refresh_pending = False
+        self.refresh_all()
+
     def set_language(self, lang: str):
         self.lang = "ru" if lang == "ru" else "en"
+        self.liveBrain.set_language(self.lang)
         self.lblBehaviorTitle.setText(_tr(self.lang, "brain_weights"))
         self.lblMemoryTitle.setText(_tr(self.lang, "memory_events"))
         self.lblLearningTitle.setText(_tr(self.lang, "learning_signals"))
@@ -1463,9 +1494,15 @@ class AgentBrainWidget(QtWidgets.QWidget):
             self.behaviorText.setPlainText(_tr(self.lang, "no_data")); self.memoryView.setHtml(_tr(self.lang, "no_data"))
             self.learningView.setPlainText(_tr(self.lang, "no_data"))
             self.lineageView.setPlainText(_tr(self.lang, "no_data"))
+            self.liveBrain.clear()
             self.belief2D.update_from_brain(None); self.belief3D.update_from_brain(None); return
 
         brain = getattr(ag, "brain", None)
+        brain_public = {}
+        if brain is not None and hasattr(brain, "export_public_state_for_ui"):
+            exported = brain.export_public_state_for_ui()
+            if isinstance(exported, dict):
+                brain_public = dict(exported)
         self.lblName.setText(f"{_tr(self.lang, 'agent')}: {ag.name} ({ag.id})")
 
         pets_list = self._pets_for_agent(ag)
@@ -1488,9 +1525,9 @@ class AgentBrainWidget(QtWidgets.QWidget):
         surv_raw = _safe_float(getattr(brain, "survival_score", 0.0), 0.0)
         surv_pct = int(_clamp(surv_raw * 100.0, 0.0, 100.0))
         energy_raw = _safe_float(getattr(ag, "energy", 0.0), 0.0)
-        energy_val = int(_clamp(energy_raw, 0.0, 100.0))
+        energy_val = _resource_pct(energy_raw, 0.0)
         hunger_raw = _safe_float(getattr(ag, "hunger", 0.0), 0.0)
-        hunger_val = int(_clamp(hunger_raw, 0.0, 100.0))
+        hunger_val = _resource_pct(hunger_raw, 0.0)
         self.hpBar.setValue(hp_val); self.fearBar.setValue(fear_pct)
         self.survivalBar.setValue(surv_pct); self.energyBar.setValue(energy_val)
         self.hungerBar.setValue(hunger_val)
@@ -1512,6 +1549,38 @@ class AgentBrainWidget(QtWidgets.QWidget):
         self.lblDeathReason.setText(f"{_tr(self.lang, 'last_death_reason')}: {last_death_reason if last_death_reason else '–'}")
         self.lblThought.setText(f"{_tr(self.lang, 'thought')}: {last_thought}")
 
+        monitor = getattr(self.trainer, "monitor", None)
+        tick_value = int(getattr(monitor, "tick", getattr(ag, "age_ticks", 0)) or 0)
+        self.liveBrain.update_from_debug(
+            {
+                "id": ag.id,
+                "name": ag.name,
+                "tick": tick_value,
+                "age_ticks": int(getattr(ag, "age_ticks", brain_public.get("age_ticks", 0)) or 0),
+                "fear": fear_raw,
+                "health": hp_val,
+                "energy": energy_val,
+                "hunger": hunger_val,
+                "hazards_known": int(len(getattr(ag, "known_hazards", []) or [])),
+                "danger_zones_count": int(len(getattr(ag, "danger_zones", []) or [])),
+                "memory_tail": list(getattr(ag, "memory_tail", []) or []),
+                "mind_block": brain_public,
+                "mind_survival_score": brain_public.get("survival_score", surv_raw),
+                "mind_drive": drive_txt,
+                "mind_behavior_rules": brain_public.get("behavior_rules", {}),
+                "mind_beliefs": brain_public.get("beliefs", []),
+                "mind_memory_tail": brain_public.get("memory_tail", []),
+                "mind_trauma_map": brain_public.get("trauma_map", []),
+                "mind_curiosity_charge": brain_public.get("curiosity_charge", getattr(brain, "curiosity_charge", 0.0) if brain else 0.0),
+                "mind_last_thought": brain_public.get("last_thought", last_thought),
+                "generation": gen_val,
+                "parents": parents_val,
+                "lineage_role": role_raw,
+                "tags": list(getattr(ag, "tags", []) or []),
+            },
+            tick=tick_value,
+        )
+
         behavior_dump: Any = ""
         if brain is not None and getattr(brain, "behavior_rules", None):
             brules = brain.behavior_rules
@@ -1530,8 +1599,8 @@ class AgentBrainWidget(QtWidgets.QWidget):
                 f"age_ticks           = {getattr(brain, 'age_ticks', 0)}\n"
                 f"survival_score      = {getattr(brain, 'survival_score', 0.0):.2f}\n"
                 f"fear_level          = {getattr(brain, 'fear_level', 0.0):.2f}\n"
-                f"energy              = {energy_raw:.1f}\n"
-                f"hunger              = {hunger_raw:.1f}\n"
+                f"energy              = {energy_val:.1f}\n"
+                f"hunger              = {hunger_val:.1f}\n"
                 f"curiosity_charge    = {curiosity:.2f}\n"
                 f"trauma_spots        = {len(trauma_map)}\n"
                 f"pets_owned          = {len(pets_list)}\n"
@@ -1627,12 +1696,31 @@ class TrainerStatsWidget(QtWidgets.QWidget):
         btnLay.addWidget(self.btnStartPause); btnLay.addWidget(self.btnNextEpoch); btnLay.addWidget(self.btnSaveBrains)
         outer.addWidget(btnFrame, 0); outer.addStretch(1)
 
-        self.timer = QTimer(self); self.timer.setInterval(10); self.timer.timeout.connect(self._on_timer_tick)
-        trainer.world_changed.connect(self.refresh_monitor); trainer.epoch_changed.connect(self.refresh_monitor)
+        self._monitor_refresh_pending = False
+        self._monitor_refresh_timer = QTimer(self)
+        self._monitor_refresh_timer.setSingleShot(True)
+        self._monitor_refresh_timer.setInterval(100)
+        self._monitor_refresh_timer.timeout.connect(self._flush_monitor_refresh)
+
+        self.timer = QTimer(self); self.timer.setInterval(16); self.timer.timeout.connect(self._on_timer_tick)
+        trainer.world_changed.connect(self.schedule_refresh_monitor); trainer.epoch_changed.connect(self.schedule_refresh_monitor)
         self.btnStartPause.clicked.connect(self.on_start_pause_clicked)
         self.btnNextEpoch.clicked.connect(self.on_next_epoch_clicked)
         self.btnSaveBrains.clicked.connect(self.on_save_clicked)
         self.set_language(self.lang)
+        self.refresh_monitor()
+
+    @Slot()
+    def schedule_refresh_monitor(self):
+        self._monitor_refresh_pending = True
+        if not self._monitor_refresh_timer.isActive():
+            self._monitor_refresh_timer.start()
+
+    @Slot()
+    def _flush_monitor_refresh(self):
+        if not self._monitor_refresh_pending:
+            return
+        self._monitor_refresh_pending = False
         self.refresh_monitor()
 
     def set_language(self, lang: str):
@@ -1652,7 +1740,7 @@ class TrainerStatsWidget(QtWidgets.QWidget):
 
     @Slot()
     def on_next_epoch_clicked(self):
-        self.trainer.force_next_epoch(); self.refresh_monitor()
+        self.trainer.force_next_epoch(); self.schedule_refresh_monitor()
 
     @Slot()
     def on_save_clicked(self):
@@ -1661,7 +1749,8 @@ class TrainerStatsWidget(QtWidgets.QWidget):
 
     @Slot()
     def _on_timer_tick(self):
-        self.trainer.step_tick(); self.refresh_monitor()
+        self.trainer.step_tick()
+        self.schedule_refresh_monitor()
 
     @Slot()
     def refresh_monitor(self):

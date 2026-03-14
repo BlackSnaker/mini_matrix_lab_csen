@@ -350,6 +350,7 @@ def load_brain_with_meta(agent_lineage_id: str) -> Optional[Dict[str, Any]]:
             "lineage": lineage_meta,
             "runtime": runtime_meta,
             "snapshots": snapshots,
+            "export_meta": raw.get("_export_meta", {}) if isinstance(raw, dict) else {},
         }
     except Exception as e:
         print(f"{_LOG_PREFIX} load_brain_with_meta error for {agent_lineage_id}: {e}")
@@ -411,5 +412,9 @@ def save_brain(block: ConsciousnessBlock) -> None:
         "brain": brain_dict,
         "last_saved": _now_utc_iso(),
     }
+
+    export_meta = getattr(block, "trainer_side_meta", None)
+    if isinstance(export_meta, dict) and export_meta:
+        payload["_export_meta"] = dict(export_meta)
 
     _write_json_file_atomic(path, payload)

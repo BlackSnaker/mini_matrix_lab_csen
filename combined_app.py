@@ -154,6 +154,42 @@ def _iter_vals(maybe_collection):
     return [maybe_collection]
 
 
+_CONTROL_TEXT_KEY_ALIASES: Dict[str, int] = {
+    "w": int(Qt.Key_W),
+    "ц": int(Qt.Key_W),
+    "a": int(Qt.Key_A),
+    "ф": int(Qt.Key_A),
+    "s": int(Qt.Key_S),
+    "ы": int(Qt.Key_S),
+    "d": int(Qt.Key_D),
+    "в": int(Qt.Key_D),
+    "v": int(Qt.Key_V),
+    "м": int(Qt.Key_V),
+    "q": int(Qt.Key_Q),
+    "й": int(Qt.Key_Q),
+    "e": int(Qt.Key_E),
+    "у": int(Qt.Key_E),
+    "g": int(Qt.Key_G),
+    "п": int(Qt.Key_G),
+    "m": int(Qt.Key_M),
+    "ь": int(Qt.Key_M),
+    "r": int(Qt.Key_R),
+    "к": int(Qt.Key_R),
+    "f": int(Qt.Key_F),
+    "а": int(Qt.Key_F),
+}
+
+
+def _normalize_control_key_event(e: QtGui.QKeyEvent) -> int:
+    key = int(e.key())
+    text = str(e.text() or "").strip().casefold()
+    if text:
+        mapped = _CONTROL_TEXT_KEY_ALIASES.get(text)
+        if mapped is not None:
+            return int(mapped)
+    return key
+
+
 class GlassCard(QtWidgets.QFrame):
     """Полупрозрачная «акриловая» карточка с мягкой тенью и верхним бликом."""
     def __init__(self, parent=None, radius:int=RADIUS, shadow_blur:int=28, shadow_offset:QtCore.QPoint=QtCore.QPoint(0,6)):
@@ -269,6 +305,7 @@ class MiniMapWidget(QtWidgets.QWidget):
     def __init__(self, shared, parent=None):
         super().__init__(parent)
         self.shared = shared
+        self._player_provider = None
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setFixedSize(180, 180)
         self.setToolTip("Mini-map: click to center camera")
@@ -278,6 +315,12 @@ class MiniMapWidget(QtWidgets.QWidget):
         self._brush_agent = QtGui.QBrush(QtGui.QColor(122,162,255,220))
         self._brush_sel = QtGui.QBrush(QtGui.QColor(255,255,255,240))
         self._brush_animal = QtGui.QBrush(QtGui.QColor(255,191,105,220))
+        self._brush_player = QtGui.QBrush(QtGui.QColor(86, 236, 182, 232))
+        self._pen_player = QtGui.QPen(QtGui.QColor(210, 255, 238, 240), 1.4)
+
+    def set_player_provider(self, provider):
+        self._player_provider = provider
+        self.update()
 
     def paintEvent(self, e):
         p = QtGui.QPainter(self)
@@ -326,6 +369,23 @@ class MiniMapWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+        marker = None
+        if callable(self._player_provider):
+            try:
+                marker = self._player_provider()
+            except Exception:
+                marker = None
+        if isinstance(marker, dict) and marker.get("active"):
+            px, py = map_xy(float(marker.get("x", 0.0)), float(marker.get("z", 0.0)))
+            yaw = float(marker.get("yaw_rad", 0.0))
+            dx = math.cos(yaw) * 9.0
+            dy = math.sin(yaw) * 9.0
+            p.setPen(self._pen_player)
+            p.setBrush(self._brush_player)
+            p.drawEllipse(QtCore.QPointF(px, py), 4.2, 4.2)
+            p.drawLine(QtCore.QPointF(px, py), QtCore.QPointF(px + dx, py + dy))
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+
         p.end()
 
     def mousePressEvent(self, e: QtGui.QMouseEvent):
@@ -336,6 +396,200 @@ class MiniMapWidget(QtWidgets.QWidget):
         t = max(0.0, min(1.0, (e.position().x()-r.left())/max(1,r.width())))
         u = max(0.0, min(1.0, (e.position().y()-r.top())/max(1,r.height())))
         self.clickedWorld.emit(t*ww, u*wh)
+
+
+class WorldMapOverlay(QtWidgets.QWidget):
+    """Полноэкранная карта мира поверх интерфейса."""
+    clickedWorld = QtCore.Signal(float, float)
+    closed = QtCore.Signal()
+
+    def __init__(self, shared, parent=None):
+        super().__init__(parent)
+        self.shared = shared
+        self._player_provider = None
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+        self.hide()
+
+    def set_player_provider(self, provider):
+        self._player_provider = provider
+        self.update()
+
+    def show_map(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        self.update()
+
+    def hide_map(self):
+        if not self.isVisible():
+            return
+        self.hide()
+        self.closed.emit()
+
+    def _map_rect(self) -> QtCore.QRectF:
+        outer = self.rect().adjusted(28, 28, -28, -28)
+        panel = outer.adjusted(0, 56, 0, -42)
+        ww = max(1.0, float(self.shared.world_w))
+        wh = max(1.0, float(self.shared.world_h))
+        aspect = ww / wh
+        pw = panel.width()
+        ph = panel.height()
+        if pw / max(1.0, ph) > aspect:
+            map_h = ph
+            map_w = map_h * aspect
+        else:
+            map_w = pw
+            map_h = map_w / max(1e-6, aspect)
+        x = panel.center().x() - map_w * 0.5
+        y = panel.center().y() - map_h * 0.5
+        return QtCore.QRectF(x, y, map_w, map_h)
+
+    def _world_to_screen(self, rect: QtCore.QRectF, x: float, y: float) -> QtCore.QPointF:
+        ww = max(1.0, float(self.shared.world_w))
+        wh = max(1.0, float(self.shared.world_h))
+        px = rect.left() + (float(x) / ww) * rect.width()
+        py = rect.top() + (float(y) / wh) * rect.height()
+        return QtCore.QPointF(px, py)
+
+    def _screen_to_world(self, rect: QtCore.QRectF, pos: QtCore.QPointF) -> Tuple[float, float]:
+        ww = max(1.0, float(self.shared.world_w))
+        wh = max(1.0, float(self.shared.world_h))
+        tx = max(0.0, min(1.0, (pos.x() - rect.left()) / max(1.0, rect.width())))
+        ty = max(0.0, min(1.0, (pos.y() - rect.top()) / max(1.0, rect.height())))
+        return tx * ww, ty * wh
+
+    def paintEvent(self, _event: QtGui.QPaintEvent):
+        if not self.isVisible():
+            return
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QtGui.QColor(6, 10, 16, 228))
+
+        outer = self.rect().adjusted(18, 18, -18, -18)
+        panel_path = QtGui.QPainterPath()
+        panel_path.addRoundedRect(QtCore.QRectF(outer), 26.0, 26.0)
+        panel_grad = QtGui.QLinearGradient(outer.topLeft(), outer.bottomRight())
+        panel_grad.setColorAt(0.0, QtGui.QColor(12, 18, 28, 242))
+        panel_grad.setColorAt(1.0, QtGui.QColor(7, 11, 18, 242))
+        p.fillPath(panel_path, panel_grad)
+        p.setPen(QtGui.QPen(QtGui.QColor(82, 112, 158, 180), 1.2))
+        p.drawPath(panel_path)
+
+        title_font = p.font()
+        title_font.setPointSize(15)
+        title_font.setWeight(QtGui.QFont.DemiBold)
+        p.setFont(title_font)
+        p.setPen(QtGui.QColor(236, 244, 255))
+        title_rect = QtCore.QRectF(outer.left() + 20, outer.top() + 14, outer.width() - 40, 26)
+        p.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, "Карта мира")
+
+        meta_font = p.font()
+        meta_font.setPointSize(10)
+        meta_font.setWeight(QtGui.QFont.Medium)
+        p.setFont(meta_font)
+        p.setPen(QtGui.QColor(170, 190, 214))
+        world_meta = f"{self.shared.world_w:.0f} x {self.shared.world_h:.0f}  |  ЛКМ — перейти  |  Esc / M — закрыть"
+        p.drawText(QtCore.QRectF(outer.left() + 20, outer.top() + 42, outer.width() - 40, 20), Qt.AlignLeft | Qt.AlignVCenter, world_meta)
+
+        map_rect = self._map_rect()
+        map_path = QtGui.QPainterPath()
+        map_path.addRoundedRect(map_rect, 18.0, 18.0)
+        p.fillPath(map_path, QtGui.QColor(16, 24, 34, 242))
+        p.setPen(QtGui.QPen(QtGui.QColor(62, 88, 118, 210), 1.1))
+        p.drawPath(map_path)
+
+        clip_path = QtGui.QPainterPath()
+        clip_path.addRoundedRect(map_rect.adjusted(1, 1, -1, -1), 17.0, 17.0)
+        p.save()
+        p.setClipPath(clip_path)
+
+        for i in range(1, 8):
+            x = map_rect.left() + map_rect.width() * (i / 8.0)
+            y = map_rect.top() + map_rect.height() * (i / 8.0)
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 22), 1.0))
+            p.drawLine(QtCore.QPointF(x, map_rect.top()), QtCore.QPointF(x, map_rect.bottom()))
+            p.drawLine(QtCore.QPointF(map_rect.left(), y), QtCore.QPointF(map_rect.right(), y))
+
+        for zone in list(getattr(getattr(self.shared.engine, "world", None), "zones", []) or []):
+            kind = str(getattr(zone, "kind", "") or "")
+            if kind == "safe":
+                fill = QtGui.QColor(74, 210, 184, 58)
+                stroke = QtGui.QColor(108, 245, 210, 132)
+            elif kind == "hazard":
+                fill = QtGui.QColor(255, 106, 106, 54)
+                stroke = QtGui.QColor(255, 148, 120, 138)
+            else:
+                fill = QtGui.QColor(120, 140, 190, 26)
+                stroke = QtGui.QColor(146, 166, 214, 84)
+            center = self._world_to_screen(map_rect, float(getattr(zone, "x", 0.0)), float(getattr(zone, "z", 0.0)))
+            radius = (float(getattr(zone, "radius", 1.0)) / max(1.0, float(self.shared.world_w))) * map_rect.width()
+            radius = max(4.0, radius)
+            p.setPen(QtGui.QPen(stroke, 1.0))
+            p.setBrush(fill)
+            p.drawEllipse(center, radius, radius)
+
+        selected_id = self.shared.get_selected_agent_id()
+        for aid, ent in list(getattr(self.shared.engine, "agents", {}).items()):
+            center = self._world_to_screen(map_rect, float(getattr(ent.transform.pos, "x", 0.0)), float(getattr(ent.transform.pos, "z", 0.0)))
+            sel = aid == selected_id
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(244, 248, 255, 244) if sel else QtGui.QColor(122, 162, 255, 224))
+            r = 6.6 if sel else 4.2
+            p.drawEllipse(center, r, r)
+            if sel:
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 80), 1.2))
+                p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+                p.drawEllipse(center, 10.0, 10.0)
+
+        for ani in _iter_vals(getattr(self.shared.engine, "animals", [])):
+            center = self._world_to_screen(map_rect, float(getattr(ani.transform.pos, "x", 0.0)), float(getattr(ani.transform.pos, "z", 0.0)))
+            p.setPen(QtCore.Qt.PenStyle.NoPen)
+            p.setBrush(QtGui.QColor(255, 191, 105, 218))
+            p.drawRect(QtCore.QRectF(center.x() - 3.1, center.y() - 3.1, 6.2, 6.2))
+
+        marker = None
+        if callable(self._player_provider):
+            try:
+                marker = self._player_provider()
+            except Exception:
+                marker = None
+        if isinstance(marker, dict) and marker.get("active"):
+            center = self._world_to_screen(map_rect, float(marker.get("x", 0.0)), float(marker.get("z", 0.0)))
+            yaw = float(marker.get("yaw_rad", 0.0))
+            dx = math.cos(yaw) * 16.0
+            dy = math.sin(yaw) * 16.0
+            p.setPen(QtGui.QPen(QtGui.QColor(214, 255, 238, 248), 2.0))
+            p.setBrush(QtGui.QColor(86, 236, 182, 240))
+            p.drawEllipse(center, 6.8, 6.8)
+            p.drawLine(center, QtCore.QPointF(center.x() + dx, center.y() + dy))
+
+        p.restore()
+
+        footer = QtCore.QRectF(outer.left() + 20, outer.bottom() - 28, outer.width() - 40, 18)
+        p.setPen(QtGui.QColor(162, 180, 201))
+        p.drawText(footer, Qt.AlignLeft | Qt.AlignVCenter, "Белые точки — выбранные агенты, зелёный маркер — игрок, оранжевые — животные")
+
+    def mousePressEvent(self, e: QtGui.QMouseEvent):
+        if e.button() not in (Qt.LeftButton, Qt.RightButton):
+            e.accept()
+            return
+        map_rect = self._map_rect()
+        if e.button() == Qt.LeftButton and map_rect.contains(e.position()):
+            wx, wy = self._screen_to_world(map_rect, e.position())
+            self.clickedWorld.emit(float(wx), float(wy))
+        self.hide_map()
+        e.accept()
+
+    def keyPressEvent(self, e: QtGui.QKeyEvent):
+        key = _normalize_control_key_event(e)
+        if key in (Qt.Key_Escape, Qt.Key_M, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.hide_map()
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
 
 # ======================================================
@@ -466,11 +720,16 @@ class SharedState(QtCore.QObject):
 class World3DView(QOpenGLWidget):
     requestSetGoal = QtCore.Signal(str, float, float)  # agent_id, x, z
     fpsUpdated = QtCore.Signal(float)
+    firstPersonChanged = QtCore.Signal(bool)
+    firstPersonMessage = QtCore.Signal(str)
+    worldMapRequested = QtCore.Signal()
+    gameFullscreenRequested = QtCore.Signal()
 
-    def __init__(self, shared: SharedState, parent=None):
+    def __init__(self, shared: SharedState, parent=None, *, player_drive_callback=None):
         super().__init__(parent)
         self.shared = shared
         self.engine = shared.engine
+        self._player_drive_callback = player_drive_callback
         self.shared.updated.connect(self.update)
 
         self.center_x = 50.0
@@ -486,7 +745,43 @@ class World3DView(QOpenGLWidget):
         self._last_mouse_pos: Optional[QtCore.QPointF] = None
         self._btns = Qt.NoButton
 
+        self._camera_mode = "orbit"
+        self._pressed_keys: set[int] = set()
+        self._fp_x = self.center_x
+        self._fp_z = self.center_z
+        self._fp_yaw_deg = 45.0
+        self._fp_pitch_deg = -6.0
+        self._fp_target_yaw_deg = self._fp_yaw_deg
+        self._fp_target_pitch_deg = self._fp_pitch_deg
+        self._fp_eye_height = 1.72
+        self._fp_radius = 0.92
+        self._fp_walk_speed = 8.5
+        self._fp_run_speed = 13.5
+        self._fp_precision_speed = 4.8
+        self._fp_vel_x = 0.0
+        self._fp_vel_z = 0.0
+        self._fp_accel_response = 12.0
+        self._fp_decel_response = 9.0
+        self._fp_look_response = 18.0
+        self._fp_headbob_phase = 0.0
+        self._fp_headbob_amount = 0.0
+        self._fp_last_speed_mode = "walk"
+        self._fp_captured = False
+        self._fp_mouse_grabbed = False
+        self._fp_keyboard_grabbed = False
+        self._ignore_mouse_warp = False
+        self._mouse_sensitivity = 0.10
+        self._mouse_edge_margin = 48.0
+        self._fp_collision_padding = 0.22
+        self._fp_focus_info: Dict[str, Any] = {}
+        self._fp_center_ground: Optional[Tuple[float, float]] = None
+        self._orbit_fov_deg = self.fov_deg
+        self._fp_fov_deg = 72.0
+        self._fp_fov_run_deg = 78.0
+        self._fp_fov_current = self._fp_fov_deg
+
         self._timer = QTimer(self)
+        self._timer.setTimerType(QtCore.Qt.PreciseTimer)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._frame_tick)
         self._timer.start()
@@ -494,11 +789,66 @@ class World3DView(QOpenGLWidget):
         self._last_frame_time.start()
 
         self._fps_smooth = 0.0
+        platform_name = str(QtGui.QGuiApplication.platformName() or "").strip().lower()
+        self._qt_platform_name = platform_name
+        self._supports_native_pointer_grab = platform_name in {"xcb", "windows", "cocoa"}
+        self._supports_keyboard_grab = platform_name in {"xcb", "windows", "cocoa"}
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
 
-    def _camera_position(self) -> Tuple[float, float, float]:
+    def is_first_person_mode(self) -> bool:
+        return self._camera_mode == "first_person"
+
+    def get_first_person_hud_state(self) -> Dict[str, Any]:
+        selected_name = str(self.shared.get_selected_agent_debug().get("name") or "—")
+        driving = bool(self._player_control_agent_id())
+        return {
+            "active": self.is_first_person_mode(),
+            "captured": self._fp_captured,
+            "x": float(self._fp_x),
+            "z": float(self._fp_z),
+            "yaw_deg": float(self._fp_yaw_deg),
+            "pitch_deg": float(self._fp_pitch_deg),
+            "speed_mode": self._fp_last_speed_mode,
+            "focus_name": self._fp_focus_info.get("name"),
+            "focus_kind": self._fp_focus_info.get("kind"),
+            "focus_distance": self._fp_focus_info.get("distance"),
+            "has_ground_target": bool(self._fp_center_ground),
+            "selected_name": selected_name,
+            "driving": driving,
+        }
+
+    def get_minimap_player_marker(self) -> Dict[str, Any]:
+        return {
+            "active": self.is_first_person_mode(),
+            "x": float(self._fp_x),
+            "z": float(self._fp_z),
+            "yaw_rad": math.radians(self._fp_yaw_deg),
+        }
+
+    def camera_status_text(self) -> str:
+        if self.is_first_person_mode():
+            if self._player_control_agent_id():
+                who = str(self.shared.get_selected_agent_debug().get("name") or self.shared.get_selected_agent_id() or "agent")
+                return f"Cam: FPS / drive {who} x={self._fp_x:0.1f}, z={self._fp_z:0.1f}, yaw={self._fp_yaw_deg:0.0f}°, pitch={self._fp_pitch_deg:0.0f}°"
+            return f"Cam: FPS x={self._fp_x:0.1f}, z={self._fp_z:0.1f}, yaw={self._fp_yaw_deg:0.0f}°, pitch={self._fp_pitch_deg:0.0f}°"
+        return f"Cam: ORBIT x={self.center_x:0.1f}, z={self.center_z:0.1f}, dist={self.distance:0.0f}"
+
+    @staticmethod
+    def _angle_diff_deg(target: float, current: float) -> float:
+        return (target - current + 180.0) % 360.0 - 180.0
+
+    def _camera_forward_vector(self) -> Tuple[float, float, float]:
+        yaw = math.radians(self._fp_yaw_deg)
+        pitch = math.radians(self._fp_pitch_deg)
+        cos_p = math.cos(pitch)
+        return cos_p * math.cos(yaw), math.sin(pitch), cos_p * math.sin(yaw)
+
+    def _current_fov_deg(self) -> float:
+        return self._fp_fov_current if self.is_first_person_mode() else self._orbit_fov_deg
+
+    def _orbit_camera_position(self) -> Tuple[float, float, float]:
         yaw = math.radians(self.yaw_deg)
         pitch = math.radians(self.pitch_deg)
         r = max(10.0, self.distance)
@@ -509,17 +859,571 @@ class World3DView(QOpenGLWidget):
         cam_z = cz + r * cos_p * math.sin(yaw)
         return cam_x, cam_y, cam_z
 
+    def _first_person_eye_y(self) -> float:
+        return self._fp_eye_height + math.sin(self._fp_headbob_phase) * self._fp_headbob_amount
+
+    def _camera_position(self) -> Tuple[float, float, float]:
+        if self.is_first_person_mode():
+            return self._fp_x, self._first_person_eye_y(), self._fp_z
+        return self._orbit_camera_position()
+
+    def _camera_look_target(self) -> Tuple[float, float, float]:
+        if self.is_first_person_mode():
+            fx, fy, fz = self._camera_forward_vector()
+            cam_x, cam_y, cam_z = self._camera_position()
+            return (
+                cam_x + fx * 8.0,
+                cam_y + fy * 8.0,
+                cam_z + fz * 8.0,
+            )
+        return self.center_x, 0.0, self.center_z
+
     def _clamp_center(self):
         self.center_x = max(0.0, min(self.shared.world_w, self.center_x))
         self.center_z = max(0.0, min(self.shared.world_h, self.center_z))
+
+    def _clamp_first_person(self):
+        margin = self._fp_radius + 0.4
+        self._fp_x = max(margin, min(self.shared.world_w - margin, self._fp_x))
+        self._fp_z = max(margin, min(self.shared.world_h - margin, self._fp_z))
+        self.center_x = self._fp_x
+        self.center_z = self._fp_z
+
+    def _selected_agent_entity(self):
+        sel = self.shared.get_selected_agent_id()
+        if sel and sel in self.engine.agents:
+            return self.engine.agents[sel]
+        return None
+
+    def _sync_first_person_agent_visibility(self) -> None:
+        hidden: set[str] = set()
+        if self.is_first_person_mode():
+            control_id = self._player_control_agent_id()
+            if control_id:
+                hidden.add(str(control_id))
+        try:
+            self.engine.hidden_agent_ids = hidden
+        except Exception:
+            pass
+
+    def _player_control_agent_id(self) -> Optional[str]:
+        sel = self.shared.get_selected_agent_id()
+        if not sel or not callable(self._player_drive_callback):
+            return None
+        return str(sel)
+
+    def _ensure_control_target_selected(self) -> Optional[str]:
+        sel = self.shared.get_selected_agent_id()
+        if sel and sel in self.engine.agents:
+            return str(sel)
+        if not getattr(self.engine, "agents", None):
+            return None
+        best_id = None
+        best_d2 = float("inf")
+        ref_x = float(self.center_x)
+        ref_z = float(self.center_z)
+        for aid, ent in list(self.engine.agents.items()):
+            dx = float(ent.transform.pos.x) - ref_x
+            dz = float(ent.transform.pos.z) - ref_z
+            d2 = dx * dx + dz * dz
+            if d2 < best_d2:
+                best_d2 = d2
+                best_id = aid
+        if best_id:
+            self.shared.set_selected_agent(best_id)
+            return str(best_id)
+        return None
+
+    def _seed_first_person_from_context(self):
+        self._sync_first_person_agent_visibility()
+        if callable(self._player_drive_callback):
+            self._ensure_control_target_selected()
+        ent = self._selected_agent_entity()
+        if ent is not None:
+            base_yaw = math.degrees(float(ent.transform.yaw))
+            self._fp_x = float(ent.transform.pos.x)
+            self._fp_z = float(ent.transform.pos.z)
+            self._fp_yaw_deg = base_yaw
+            self._fp_pitch_deg = -4.0
+        else:
+            cam_x, cam_y, cam_z = self._orbit_camera_position()
+            dir_x = self.center_x - cam_x
+            dir_z = self.center_z - cam_z
+            horiz = max(1e-6, math.hypot(dir_x, dir_z))
+            self._fp_x = float(self.center_x)
+            self._fp_z = float(self.center_z)
+            self._fp_yaw_deg = math.degrees(math.atan2(dir_z, dir_x))
+            self._fp_pitch_deg = max(-22.0, min(18.0, math.degrees(math.atan2(-cam_y, horiz))))
+        self._fp_x, self._fp_z = self._resolve_first_person_collisions(self._fp_x, self._fp_z)
+        self._clamp_first_person()
+        self._fp_target_yaw_deg = self._fp_yaw_deg
+        self._fp_target_pitch_deg = self._fp_pitch_deg
+        self._fp_vel_x = 0.0
+        self._fp_vel_z = 0.0
+        self._fp_headbob_amount = 0.0
+        self._fp_fov_current = self._fp_fov_deg
+        self._update_first_person_focus()
+
+    def _drive_selected_agent(self, x: float, z: float, dt: float, *, facing_x: float, facing_z: float) -> Tuple[float, float]:
+        agent_id = self._player_control_agent_id()
+        if agent_id is None:
+            return float(x), float(z)
+        try:
+            result = self._player_drive_callback(
+                agent_id,
+                float(x),
+                float(z),
+                max(float(dt), 1e-6),
+                float(facing_x),
+                float(facing_z),
+                str(self._fp_last_speed_mode),
+            )
+        except Exception:
+            return float(x), float(z)
+        nx = float(x)
+        nz = float(z)
+        ok = True
+        if isinstance(result, Mapping):
+            ok = bool(result.get("ok", True))
+            nx = float(result.get("x", nx))
+            nz = float(result.get("z", nz))
+        elif isinstance(result, Sequence) and not isinstance(result, (str, bytes, bytearray)) and len(result) >= 2:
+            nx = float(result[0])
+            nz = float(result[1])
+        if not ok:
+            return float(self._fp_x), float(self._fp_z)
+        return nx, nz
+
+    def _mesh_collision_radius(self, inst) -> float:
+        kind = str(getattr(inst, "kind", "") or "")
+        sx = abs(float(getattr(getattr(inst, "scale", None), "x", 1.0)))
+        sz = abs(float(getattr(getattr(inst, "scale", None), "z", 1.0)))
+        base = 0.5 * (sx + sz)
+        mul = {
+            "house": 0.52,
+            "tree": 0.24,
+            "tower": 0.36,
+            "well": 0.38,
+            "shrine": 0.40,
+            "wall": 0.58,
+            "rock": 0.42,
+            "log": 0.34,
+            "lantern": 0.16,
+            "lake": 0.62,
+            "fire": 0.22,
+        }.get(kind)
+        if mul is None:
+            return 0.0
+        return max(0.55, base * mul)
+
+    def _iter_first_person_colliders(self):
+        sel = self.shared.get_selected_agent_id()
+        for inst in list(getattr(self.engine, "static_meshes", []) or []):
+            radius = self._mesh_collision_radius(inst)
+            if radius <= 0.0:
+                continue
+            pos = getattr(inst, "pos", None)
+            yield float(getattr(pos, "x", 0.0)), float(getattr(pos, "z", 0.0)), radius
+        for aid, ent in list(getattr(self.engine, "agents", {}).items()):
+            if aid == sel:
+                continue
+            yield float(ent.transform.pos.x), float(ent.transform.pos.z), 0.78
+        for ani in _iter_vals(getattr(self.engine, "animals", [])):
+            transform = getattr(ani, "transform", None)
+            pos = getattr(transform, "pos", None)
+            if pos is None:
+                continue
+            yield float(getattr(pos, "x", 0.0)), float(getattr(pos, "z", 0.0)), 0.64
+
+    def _screen_center_world_hit(self) -> Optional[Tuple[float, float]]:
+        if self.width() <= 0 or self.height() <= 0:
+            return None
+        return self._screen_to_world_plane(self.width() * 0.5, self.height() * 0.5)
+
+    def _update_first_person_focus(self):
+        self._fp_center_ground = self._screen_center_world_hit()
+        cam_x, cam_y, cam_z = self._camera_position()
+        fx, fy, fz = self._camera_forward_vector()
+        best: Optional[Dict[str, Any]] = None
+        max_dist = 26.0
+        hidden_agent_id = self._player_control_agent_id()
+
+        def _try(kind: str, name: str, entity_id: Optional[str], ex: float, ey: float, ez: float, radius: float):
+            nonlocal best
+            vx = ex - cam_x
+            vy = ey - cam_y
+            vz = ez - cam_z
+            t = vx * fx + vy * fy + vz * fz
+            if t < 0.35 or t > max_dist:
+                return
+            perp2 = max(0.0, vx * vx + vy * vy + vz * vz - t * t)
+            lock_r = radius + 0.05 * t
+            if perp2 > lock_r * lock_r:
+                return
+            candidate = {
+                "kind": kind,
+                "name": name,
+                "entity_id": entity_id,
+                "distance": t,
+            }
+            if best is None or t < float(best["distance"]):
+                best = candidate
+
+        for aid, ent in list(getattr(self.engine, "agents", {}).items()):
+            if hidden_agent_id and aid == hidden_agent_id:
+                continue
+            _try(
+                "agent",
+                str(getattr(ent, "name", aid)),
+                aid,
+                float(ent.transform.pos.x),
+                1.05,
+                float(ent.transform.pos.z),
+                0.72,
+            )
+        for ani in _iter_vals(getattr(self.engine, "animals", [])):
+            transform = getattr(ani, "transform", None)
+            pos = getattr(transform, "pos", None)
+            if pos is None:
+                continue
+            _try(
+                "animal",
+                str(getattr(ani, "name", getattr(ani, "species", "animal"))),
+                None,
+                float(getattr(pos, "x", 0.0)),
+                0.85,
+                float(getattr(pos, "z", 0.0)),
+                0.62,
+            )
+        self._fp_focus_info = best or {}
+
+    def _resolve_first_person_collisions(self, x: float, z: float) -> Tuple[float, float]:
+        margin = self._fp_radius + 0.4
+        x = max(margin, min(self.shared.world_w - margin, x))
+        z = max(margin, min(self.shared.world_h - margin, z))
+        for i in range(3):
+            moved = False
+            for cx, cz, radius in self._iter_first_person_colliders():
+                dx = x - cx
+                dz = z - cz
+                min_dist = self._fp_radius + radius + self._fp_collision_padding
+                d2 = dx * dx + dz * dz
+                if d2 >= min_dist * min_dist:
+                    continue
+                if d2 < 1e-8:
+                    ang = math.radians(self._fp_yaw_deg + 90.0 * (i + 1))
+                    dx = math.cos(ang)
+                    dz = math.sin(ang)
+                    dist = 1.0
+                else:
+                    dist = math.sqrt(d2)
+                nx = dx / max(1e-6, dist)
+                nz = dz / max(1e-6, dist)
+                x = cx + nx * min_dist
+                z = cz + nz * min_dist
+                x = max(margin, min(self.shared.world_w - margin, x))
+                z = max(margin, min(self.shared.world_h - margin, z))
+                moved = True
+            if not moved:
+                break
+        return x, z
+
+    def _engage_mouse_capture(self):
+        if self._fp_captured or not self.isVisible():
+            return
+        self._fp_mouse_grabbed = False
+        self.setCursor(Qt.BlankCursor)
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if self._supports_native_pointer_grab:
+            try:
+                self.grabMouse(QtGui.QCursor(Qt.BlankCursor))
+                self._fp_mouse_grabbed = True
+            except TypeError:
+                try:
+                    self.grabMouse()
+                    self._fp_mouse_grabbed = True
+                except Exception:
+                    self._fp_mouse_grabbed = False
+            except Exception:
+                self._fp_mouse_grabbed = False
+        self._fp_captured = True
+        self._engage_keyboard_capture()
+        self._warp_mouse_to_center()
+
+    def _release_mouse_capture(self):
+        if not self._fp_captured:
+            return
+        if self._fp_mouse_grabbed:
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+        self.unsetCursor()
+        self._fp_mouse_grabbed = False
+        self._fp_captured = False
+        self._ignore_mouse_warp = False
+
+    def _engage_keyboard_capture(self):
+        if self._fp_keyboard_grabbed:
+            return
+        self._fp_keyboard_grabbed = False
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if self._supports_keyboard_grab:
+            try:
+                self.grabKeyboard()
+                self._fp_keyboard_grabbed = True
+            except Exception:
+                self._fp_keyboard_grabbed = False
+
+    def _release_keyboard_capture(self):
+        if not self._fp_keyboard_grabbed:
+            return
+        try:
+            self.releaseKeyboard()
+        except Exception:
+            pass
+        self._fp_keyboard_grabbed = False
+
+    def _warp_mouse_to_center(self):
+        if not self.isVisible() or not self._fp_mouse_grabbed:
+            return
+        center = QtCore.QPoint(self.width() // 2, self.height() // 2)
+        self._ignore_mouse_warp = True
+        QtGui.QCursor.setPos(self.mapToGlobal(center))
+        self._last_mouse_pos = QtCore.QPointF(center)
+
+    def _toggle_first_person_capture(self):
+        if not self.is_first_person_mode():
+            return
+        if self._fp_captured:
+            self._release_mouse_capture()
+            self.firstPersonMessage.emit("First person: cursor released")
+        else:
+            self._engage_mouse_capture()
+            self.firstPersonMessage.emit("First person: cursor captured")
+
+    def suspend_first_person_capture(self):
+        if not self.is_first_person_mode():
+            return
+        self._pressed_keys.clear()
+        self._release_mouse_capture()
+        self._release_keyboard_capture()
+        self._last_mouse_pos = None
+
+    def resume_first_person_capture(self):
+        if not self.is_first_person_mode():
+            return
+        self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        self._engage_mouse_capture()
+        self._engage_keyboard_capture()
+
+    def _first_person_primary_action(self):
+        focus = dict(self._fp_focus_info or {})
+        if focus.get("kind") == "agent" and focus.get("entity_id"):
+            self.shared.set_selected_agent(str(focus["entity_id"]))
+            self.firstPersonMessage.emit(f"Selected {focus.get('name')}")
+            return
+        if focus.get("kind") == "animal":
+            self.firstPersonMessage.emit(f"Observed {focus.get('name')}")
+            return
+        if self._fp_center_ground is not None:
+            x, z = self._fp_center_ground
+            self.firstPersonMessage.emit(f"Ground target: ({x:.1f}, {z:.1f})")
+
+    def _first_person_secondary_action(self):
+        sel = self.shared.get_selected_agent_id()
+        if not sel:
+            focus = dict(self._fp_focus_info or {})
+            if focus.get("kind") == "agent" and focus.get("entity_id"):
+                self.shared.set_selected_agent(str(focus["entity_id"]))
+                self.firstPersonMessage.emit(f"Selected {focus.get('name')}")
+            else:
+                self.firstPersonMessage.emit("No selected agent for command")
+            return
+        if self._fp_center_ground is None:
+            self.firstPersonMessage.emit("No ground point under crosshair")
+            return
+        x, z = self._fp_center_ground
+        self.requestSetGoal.emit(str(sel), float(x), float(z))
+        self.firstPersonMessage.emit(f"Goal for {sel} -> ({x:.1f}, {z:.1f})")
+
+    def set_first_person_mode(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled == self.is_first_person_mode():
+            if enabled:
+                self._engage_mouse_capture()
+                self._sync_first_person_agent_visibility()
+            return
+        if enabled:
+            self._camera_mode = "first_person"
+            self._seed_first_person_from_context()
+            self._engage_mouse_capture()
+            self._engage_keyboard_capture()
+            self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            self.firstPersonChanged.emit(True)
+            control_target = self.shared.get_selected_agent_debug().get("name") or self.shared.get_selected_agent_id()
+            if control_target:
+                self.firstPersonMessage.emit(f"Controlling {control_target}")
+            self.update()
+            return
+        self._release_mouse_capture()
+        self._release_keyboard_capture()
+        self._pressed_keys.clear()
+        self._camera_mode = "orbit"
+        self._sync_first_person_agent_visibility()
+        self.center_x = self._fp_x
+        self.center_z = self._fp_z
+        self.yaw_deg = self._fp_yaw_deg + 180.0
+        self.pitch_deg = 28.0
+        self.distance = max(44.0, min(120.0, self.distance))
+        self._clamp_center()
+        self._fp_focus_info = {}
+        self._fp_center_ground = None
+        self.firstPersonChanged.emit(False)
+        self.update()
+
+    def toggle_first_person_mode(self):
+        self.set_first_person_mode(not self.is_first_person_mode())
+
+    def reset_view(self):
+        if self.is_first_person_mode():
+            self._seed_first_person_from_context()
+            self._engage_mouse_capture()
+            self.update()
+            return
+        self.center_x = self.shared.world_w * 0.5
+        self.center_z = self.shared.world_h * 0.5
+        self.distance = max(140.0, max(self.shared.world_w, self.shared.world_h) * 1.25)
+        self.yaw_deg = -135.0
+        self.pitch_deg = 40.0
+        self.update()
+
+    def focus_selected_target(self):
+        ent = self._selected_agent_entity()
+        if ent is None:
+            return
+        if self.is_first_person_mode():
+            self._fp_x = float(ent.transform.pos.x)
+            self._fp_z = float(ent.transform.pos.z)
+            self._fp_yaw_deg = math.degrees(float(ent.transform.yaw))
+            self._fp_x, self._fp_z = self._resolve_first_person_collisions(self._fp_x, self._fp_z)
+            self._clamp_first_person()
+            self._engage_mouse_capture()
+            self.update()
+            return
+        self.center_x = ent.transform.pos.x
+        self.center_z = ent.transform.pos.z
+        self._clamp_center()
+        self.update()
+
+    def cycle_next_target(self):
+        self.shared.cycle_next_agent()
+        self._sync_first_person_agent_visibility()
+        self.focus_selected_target()
+
+    def move_first_person_to(self, x: float, z: float):
+        self._fp_x = float(x)
+        self._fp_z = float(z)
+        self._fp_x, self._fp_z = self._resolve_first_person_collisions(self._fp_x, self._fp_z)
+        self._fp_vel_x = 0.0
+        self._fp_vel_z = 0.0
+        facing_x = math.cos(math.radians(self._fp_yaw_deg))
+        facing_z = math.sin(math.radians(self._fp_yaw_deg))
+        self._fp_x, self._fp_z = self._drive_selected_agent(
+            self._fp_x,
+            self._fp_z,
+            1.0 / 60.0,
+            facing_x=facing_x,
+            facing_z=facing_z,
+        )
+        self._clamp_first_person()
+        self.update()
+
+    def _update_first_person(self, dt: float):
+        if not self.is_first_person_mode():
+            return
+        self._sync_first_person_agent_visibility()
+        dt = max(0.0, min(dt, 0.05))
+        yaw_diff = self._angle_diff_deg(self._fp_target_yaw_deg, self._fp_yaw_deg)
+        self._fp_yaw_deg += yaw_diff * min(1.0, dt * self._fp_look_response)
+        pitch_alpha = min(1.0, dt * self._fp_look_response)
+        self._fp_pitch_deg += (self._fp_target_pitch_deg - self._fp_pitch_deg) * pitch_alpha
+
+        move_local_x = 0.0
+        move_local_z = 0.0
+        yaw = math.radians(self._fp_yaw_deg)
+        fwd_x = math.cos(yaw)
+        fwd_z = math.sin(yaw)
+        right_x = -math.sin(yaw)
+        right_z = math.cos(yaw)
+
+        if Qt.Key_W in self._pressed_keys or Qt.Key_Up in self._pressed_keys:
+            move_local_z += 1.0
+        if Qt.Key_S in self._pressed_keys or Qt.Key_Down in self._pressed_keys:
+            move_local_z -= 0.78
+        if Qt.Key_A in self._pressed_keys:
+            move_local_x -= 0.92
+        if Qt.Key_D in self._pressed_keys:
+            move_local_x += 0.92
+
+        move_x = right_x * move_local_x + fwd_x * move_local_z
+        move_z = right_z * move_local_x + fwd_z * move_local_z
+        length = math.hypot(move_x, move_z)
+        running = Qt.Key_Shift in self._pressed_keys
+        precision = Qt.Key_Control in self._pressed_keys
+        target_bob = 0.0
+        if precision:
+            self._fp_last_speed_mode = "precision"
+        else:
+            self._fp_last_speed_mode = "sprint" if running else "walk"
+
+        target_vx = 0.0
+        target_vz = 0.0
+        if length > 1e-6:
+            move_x /= length
+            move_z /= length
+            if precision:
+                speed = self._fp_precision_speed
+            else:
+                speed = self._fp_run_speed if running else self._fp_walk_speed
+            target_vx = move_x * speed
+            target_vz = move_z * speed
+            target_bob = 0.058 if running else 0.034
+            self._fp_headbob_phase += dt * (11.5 if running else 7.2)
+        vel_alpha = min(1.0, dt * (self._fp_accel_response if length > 1e-6 else self._fp_decel_response))
+        self._fp_vel_x += (target_vx - self._fp_vel_x) * vel_alpha
+        self._fp_vel_z += (target_vz - self._fp_vel_z) * vel_alpha
+        next_x = self._fp_x + self._fp_vel_x * dt
+        next_z = self._fp_z + self._fp_vel_z * dt
+        self._fp_x, self._fp_z = self._resolve_first_person_collisions(next_x, next_z)
+        if abs(next_x - self._fp_x) > 1e-4:
+            self._fp_vel_x = 0.0
+        if abs(next_z - self._fp_z) > 1e-4:
+            self._fp_vel_z = 0.0
+        self._clamp_first_person()
+        if abs(self._fp_vel_x) + abs(self._fp_vel_z) > 0.06:
+            target_bob = max(target_bob, 0.028)
+        self._fp_headbob_amount += (target_bob - self._fp_headbob_amount) * min(1.0, dt * 7.5)
+        fov_target = self._fp_fov_run_deg if running and not precision else self._fp_fov_deg
+        self._fp_fov_current += (fov_target - self._fp_fov_current) * min(1.0, dt * 6.0)
+        self._fp_x, self._fp_z = self._drive_selected_agent(
+            self._fp_x,
+            self._fp_z,
+            dt,
+            facing_x=fwd_x,
+            facing_z=fwd_z,
+        )
+        self.center_x = self._fp_x
+        self.center_z = self._fp_z
+        self._update_first_person_focus()
 
     def paintGL(self):
         cam_x, cam_y, cam_z = self._camera_position()
         self.engine.setup_viewport_and_camera(
             w=self.width(), h=self.height(),
             cam_pos=(cam_x, cam_y, cam_z),
-            cam_look=(self.center_x, 0.0, self.center_z),
-            fov_deg=self.fov_deg,
+            cam_look=self._camera_look_target(),
+            fov_deg=self._current_fov_deg(),
         )
         self.engine.render_opengl()
         self._mv = glGetDoublev(GL_MODELVIEW_MATRIX)
@@ -531,6 +1435,7 @@ class World3DView(QOpenGLWidget):
         self._last_frame_time.restart()
         try:
             self.engine.update(dt)
+            self._update_first_person(dt)
         finally:
             self.update()
             if dt > 0:
@@ -569,6 +1474,22 @@ class World3DView(QOpenGLWidget):
         return best_id
 
     def mousePressEvent(self, e: QtGui.QMouseEvent):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if self.is_first_person_mode():
+            if not self._fp_captured:
+                self._engage_mouse_capture()
+                e.accept()
+                return
+            if e.button() == Qt.LeftButton:
+                self._first_person_primary_action()
+                e.accept()
+                return
+            if e.button() == Qt.RightButton:
+                self._first_person_secondary_action()
+                e.accept()
+                return
+            e.accept()
+            return
         self._btns = e.buttons()
         self._last_mouse_pos = e.position()
         if e.button() == Qt.LeftButton:
@@ -602,11 +1523,43 @@ class World3DView(QOpenGLWidget):
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e: QtGui.QMouseEvent):
+        if self.is_first_person_mode():
+            e.accept()
+            return
         self._btns = e.buttons()
         self._last_mouse_pos = None
         super().mouseReleaseEvent(e)
 
     def mouseMoveEvent(self, e: QtGui.QMouseEvent):
+        if self.is_first_person_mode():
+            if not self._fp_captured:
+                self._last_mouse_pos = e.position()
+                e.accept()
+                return
+            if self._ignore_mouse_warp:
+                self._ignore_mouse_warp = False
+                self._last_mouse_pos = e.position()
+                e.accept()
+                return
+            if self._last_mouse_pos is None:
+                self._last_mouse_pos = e.position()
+                e.accept()
+                return
+            delta = e.position() - self._last_mouse_pos
+            self._last_mouse_pos = e.position()
+            dx = max(-42.0, min(42.0, float(delta.x())))
+            dy = max(-42.0, min(42.0, float(delta.y())))
+            self._fp_target_yaw_deg += dx * self._mouse_sensitivity
+            self._fp_target_pitch_deg = max(-78.0, min(68.0, self._fp_target_pitch_deg - dy * self._mouse_sensitivity * 0.88))
+            if self._fp_mouse_grabbed and (
+                e.position().x() < self._mouse_edge_margin
+                or e.position().x() > self.width() - self._mouse_edge_margin
+                or e.position().y() < self._mouse_edge_margin
+                or e.position().y() > self.height() - self._mouse_edge_margin
+            ):
+                self._warp_mouse_to_center()
+            e.accept()
+            return
         if self._last_mouse_pos is None:
             self._last_mouse_pos = e.position()
         delta = e.position() - self._last_mouse_pos
@@ -629,6 +1582,9 @@ class World3DView(QOpenGLWidget):
         super().mouseMoveEvent(e)
 
     def wheelEvent(self, e: QtGui.QWheelEvent):
+        if self.is_first_person_mode():
+            e.accept()
+            return
         delta = e.angleDelta().y() / 120.0
         self.distance *= math.pow(0.9, delta)
         self.distance = max(20.0, min(600.0, self.distance))
@@ -636,30 +1592,61 @@ class World3DView(QOpenGLWidget):
         super().wheelEvent(e)
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
-        if e.key() == Qt.Key_R:
-            self.center_x = self.shared.world_w * 0.5
-            self.center_z = self.shared.world_h * 0.5
-            self.distance = max(140.0, max(self.shared.world_w, self.shared.world_h) * 1.25)
-            self.yaw_deg = -135.0
-            self.pitch_deg = 40.0
-            self.update()
-        elif e.key() == Qt.Key_F:
-            sel = self.shared.get_selected_agent_id()
-            if sel and sel in self.engine.agents:
-                ent = self.engine.agents[sel]
-                self.center_x = ent.transform.pos.x
-                self.center_z = ent.transform.pos.z
-                self._clamp_center(); self.update()
-        elif e.key() == Qt.Key_Tab:
-            self.shared.cycle_next_agent()
-            sel = self.shared.get_selected_agent_id()
-            if sel and sel in self.engine.agents:
-                ent = self.engine.agents[sel]
-                self.center_x = ent.transform.pos.x
-                self.center_z = ent.transform.pos.z
-                self._clamp_center(); self.update()
+        key = _normalize_control_key_event(e)
+        move_keys = {Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Up, Qt.Key_Down, Qt.Key_Shift, Qt.Key_Control}
+        if key in move_keys:
+            self._pressed_keys.add(key)
+            e.accept()
+            return
+        if e.isAutoRepeat():
+            e.accept()
+            return
+        if key == Qt.Key_V:
+            self.toggle_first_person_mode()
+            e.accept()
+        elif key == Qt.Key_Escape and self.is_first_person_mode():
+            self.set_first_person_mode(False)
+            e.accept()
+        elif key == Qt.Key_Q and self.is_first_person_mode():
+            self._toggle_first_person_capture()
+            e.accept()
+        elif key == Qt.Key_E and self.is_first_person_mode():
+            self._first_person_primary_action()
+            e.accept()
+        elif key == Qt.Key_G and self.is_first_person_mode():
+            self._first_person_secondary_action()
+            e.accept()
+        elif key == Qt.Key_M and self.is_first_person_mode():
+            self.worldMapRequested.emit()
+            e.accept()
+        elif key == Qt.Key_F11:
+            self.gameFullscreenRequested.emit()
+            e.accept()
+        elif key == Qt.Key_R:
+            self.reset_view()
+            e.accept()
+        elif key == Qt.Key_F:
+            self.focus_selected_target()
+            e.accept()
+        elif key == Qt.Key_Tab:
+            self.cycle_next_target()
+            e.accept()
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e: QtGui.QKeyEvent):
+        if e.isAutoRepeat():
+            e.accept()
+            return
+        self._pressed_keys.discard(_normalize_control_key_event(e))
+        super().keyReleaseEvent(e)
+
+    def focusOutEvent(self, e: QtGui.QFocusEvent):
+        self._pressed_keys.clear()
+        if self.is_first_person_mode():
+            self._release_mouse_capture()
+            self._release_keyboard_capture()
+        super().focusOutEvent(e)
 
 
 # ====================================================
@@ -670,7 +1657,28 @@ class TrainerToEngineBridge(QtCore.QObject):
         super().__init__(parent)
         self.trainer = trainer
         self.shared = shared
-        self.trainer.world_changed.connect(self._push_snapshot)
+        self._snapshot_push_pending = False
+        self._snapshot_timer = QtCore.QTimer(self)
+        self._snapshot_timer.setSingleShot(True)
+        self._snapshot_timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self._snapshot_timer.setInterval(16)
+        self._snapshot_timer.timeout.connect(self._flush_snapshot_push)
+        self.trainer.world_changed.connect(self._schedule_snapshot_push)
+
+    @Slot()
+    def _schedule_snapshot_push(self):
+        self._snapshot_push_pending = True
+        if not self._snapshot_timer.isActive():
+            self._snapshot_timer.start()
+
+    @Slot()
+    def _flush_snapshot_push(self):
+        if not self._snapshot_push_pending:
+            return
+        self._snapshot_push_pending = False
+        self._push_snapshot()
+        if self._snapshot_push_pending:
+            self._snapshot_timer.start()
 
     @Slot()
     def _push_snapshot(self):
@@ -769,6 +1777,97 @@ class LiveTickPill(QtWidgets.QLabel):
         self.setGeometry(parent_rect.right()-w-14, parent_rect.y()+14, w, 28)
 
 
+class FirstPersonOverlay(QtWidgets.QWidget):
+    """Прозрачный HUD для режима прогулки от первого лица."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self._state: Dict[str, Any] = {"active": False}
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        self._state = dict(state or {})
+        self.update()
+
+    def paintEvent(self, _event: QtGui.QPaintEvent):
+        state = self._state
+        if not state.get("active"):
+            return
+
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        r = self.rect()
+        cx = r.center().x()
+        cy = r.center().y()
+
+        # Crosshair
+        glow_pen = QtGui.QPen(QtGui.QColor(110, 220, 255, 75), 4)
+        core_pen = QtGui.QPen(QtGui.QColor(236, 246, 255, 220), 1.4)
+        for pen in (glow_pen, core_pen):
+            p.setPen(pen)
+            p.drawLine(QtCore.QPointF(cx - 12, cy), QtCore.QPointF(cx - 4, cy))
+            p.drawLine(QtCore.QPointF(cx + 4, cy), QtCore.QPointF(cx + 12, cy))
+            p.drawLine(QtCore.QPointF(cx, cy - 12), QtCore.QPointF(cx, cy - 4))
+            p.drawLine(QtCore.QPointF(cx, cy + 4), QtCore.QPointF(cx, cy + 12))
+
+        # Mode pill
+        pill = QtCore.QRectF(r.center().x() - 108, r.top() + 14, 216, 30)
+        grad = QtGui.QLinearGradient(pill.topLeft(), pill.bottomRight())
+        grad.setColorAt(0.0, QtGui.QColor(18, 30, 48, 214))
+        grad.setColorAt(1.0, QtGui.QColor(12, 18, 30, 214))
+        p.setPen(QtGui.QPen(QtGui.QColor(84, 150, 206, 180), 1.0))
+        p.setBrush(grad)
+        p.drawRoundedRect(pill, 14.0, 14.0)
+        pill_font = p.font()
+        pill_font.setPointSize(10)
+        pill_font.setWeight(QtGui.QFont.DemiBold)
+        p.setFont(pill_font)
+        p.setPen(QtGui.QColor(222, 240, 255))
+        pill_text = "FIRST PERSON / CHARACTER" if state.get("driving") else "FIRST PERSON / FREE WALK"
+        p.drawText(pill, Qt.AlignCenter, pill_text)
+
+        # Stats card
+        panel = QtCore.QRectF(r.left() + 16, r.bottom() - 126, 388, 110)
+        p.setPen(QtGui.QPen(QtGui.QColor(64, 92, 120, 180), 1.0))
+        p.setBrush(QtGui.QColor(10, 14, 22, 184))
+        p.drawRoundedRect(panel, 14.0, 14.0)
+
+        font = p.font()
+        font.setPointSize(9)
+        font.setWeight(QtGui.QFont.Medium)
+        p.setFont(font)
+        p.setPen(QtGui.QColor(216, 229, 246))
+        capture = "мышь захвачена" if state.get("captured") else "кликни в окно для захвата мыши"
+        speed = state.get("speed_mode", "walk")
+        if speed == "sprint":
+            speed_label = "SPRINT"
+        elif speed == "precision":
+            speed_label = "PRECISION"
+        else:
+            speed_label = "WALK"
+        focus_name = state.get("focus_name")
+        focus_kind = state.get("focus_kind")
+        focus_distance = state.get("focus_distance")
+        if focus_name:
+            dist_txt = f"{focus_distance:.1f}m" if isinstance(focus_distance, (int, float)) else "?"
+            focus_line = f"Прицел: {focus_name} [{focus_kind}] {dist_txt}  |  E выбрать"
+        elif state.get("has_ground_target"):
+            focus_line = "Прицел: земля  |  RMB/G задать goal выбранному агенту"
+        else:
+            focus_line = "Прицел: нет цели  |  Q освободить/вернуть курсор"
+        lines = [
+            f"M/Ь карта мира  |  WASD/ЦФЫВ вести агента  |  Shift {speed_label}  |  Ctrl точный шаг  |  V/М или Esc выход",
+            f"Позиция: x={state.get('x', 0.0):.1f}  z={state.get('z', 0.0):.1f}  yaw={state.get('yaw_deg', 0.0):.0f}°  pitch={state.get('pitch_deg', 0.0):.0f}°",
+            f"Управляемый агент: {state.get('selected_name') or '—'}" if state.get("driving") else f"Выбранный агент: {state.get('selected_name') or '—'}",
+            focus_line,
+            f"Состояние: {capture}",
+        ]
+        y = panel.top() + 14
+        for line in lines:
+            p.drawText(QtCore.QRectF(panel.left() + 12, y, panel.width() - 24, 20), Qt.AlignLeft | Qt.AlignVCenter, line)
+            y += 18
+
+
 # ====================================================
 # 6) Главное окно: 3 колонки (Stats | 3D | Brain) + Toolbar
 # ====================================================
@@ -778,6 +1877,14 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Mini-Matrix Lab — 3D + Mind Trainer")
         self.resize(1600, 900)
         self.settings = QtCore.QSettings("MiniMatrixLab", "CombinedApp")
+        self._game_fullscreen = False
+        self._game_fullscreen_saved_ui: Dict[str, Any] = {}
+        self._pending_restore_game_fullscreen = bool(self.settings.value("game_fullscreen", False, type=bool))
+        self._main_toolbar: Optional[QtWidgets.QToolBar] = None
+        self._outer_layout: Optional[QtWidgets.QVBoxLayout] = None
+        self._frame3d: Optional[QtWidgets.QFrame] = None
+        self._frame3d_layout: Optional[QtWidgets.QVBoxLayout] = None
+        self._overlay_relayout_pending = False
 
         # Глобальный шрифт
         font = QtGui.QFont(APP_FONT, 10)
@@ -823,7 +1930,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
         # 3) Shared + 3D виджет + оверлеи
         self.shared = SharedState(self.engine)
-        self.view3d = World3DView(self.shared)
+        self.view3d = World3DView(self.shared, player_drive_callback=self._drive_player_agent)
         self.view3d.center_x = self._showcase_world_w * 0.5
         self.view3d.center_z = self._showcase_world_h * 0.5
         self.view3d.distance = max(160.0, max(self._showcase_world_w, self._showcase_world_h) * 1.25)
@@ -831,6 +1938,10 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.view3d.setMinimumSize(980, 720)
         self.view3d.requestSetGoal.connect(self._on_set_goal_from_3d)
         self.view3d.fpsUpdated.connect(self._update_fps)
+        self.view3d.firstPersonChanged.connect(self._on_first_person_changed)
+        self.view3d.firstPersonMessage.connect(lambda text: self.statusBar().showMessage(text, 1800))
+        self.view3d.worldMapRequested.connect(self._toggle_world_map_overlay)
+        self.view3d.gameFullscreenRequested.connect(self._toggle_game_fullscreen_shortcut)
 
         frame3d = QtWidgets.QFrame()
         frame3d.setStyleSheet(FRAME3D_STYLE)
@@ -839,26 +1950,45 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         lay3d.setContentsMargins(10, 10, 10, 10)
         lay3d.setSpacing(8)
         lay3d.addWidget(self.view3d, 1)
+        self._frame3d = frame3d
+        self._frame3d_layout = lay3d
 
         # Оверлеи
         self.help_overlay = OverlayLabel(frame3d,
-            "ЛКМ — выбрать • ПКМ — приказать • Ctrl+ПКМ — меню • RMB — орбита • MMB — пан • колесо — зум • Tab — след. • F — фокус • R — сброс • Ctrl+W — волки")
+            self._help_text_for_current_mode())
         self.hud_overlay = AgentHud(frame3d, self.shared)
         self.live_pill = LiveTickPill(frame3d, self.shared)
         self.minimap = MiniMapWidget(self.shared, frame3d)
+        self.minimap.set_player_provider(self.view3d.get_minimap_player_marker)
         self.minimap.clickedWorld.connect(self._center_to)
+        self.fp_overlay = FirstPersonOverlay(frame3d)
+        self.fp_overlay.set_state(self.view3d.get_first_person_hud_state())
 
         def place_overlays():
             r = frame3d.rect()
-            self.hud_overlay.place(r)
+            if self.hud_overlay.isVisible():
+                self.hud_overlay.place(r)
             self.live_pill.place(r)
-            # help — под HUD
+            self.fp_overlay.setGeometry(self.view3d.geometry())
+            if hasattr(self, "world_map_overlay"):
+                self.world_map_overlay.setGeometry(central.rect())
+            # help — под HUD или в верхнем левом углу
             self.help_overlay.adjustSize()
-            self.help_overlay.move(r.x()+14, self.hud_overlay.geometry().bottom()+8)
+            help_y = self.hud_overlay.geometry().bottom() + 8 if self.hud_overlay.isVisible() else r.y() + 14
+            self.help_overlay.move(r.x()+14, help_y)
             # minimap — правый нижний
             self.minimap.move(r.right()-self.minimap.width()-14, r.bottom()-self.minimap.height()-14)
+            self.fp_overlay.raise_()
+            self.live_pill.raise_()
+            self.help_overlay.raise_()
+            self.minimap.raise_()
+            if self.hud_overlay.isVisible():
+                self.hud_overlay.raise_()
+            if hasattr(self, "world_map_overlay") and self.world_map_overlay.isVisible():
+                self.world_map_overlay.raise_()
 
         frame3d.installEventFilter(self)
+        self.view3d.installEventFilter(self)
         self._place_overlays = place_overlays
 
         # 4) панели тренера
@@ -893,6 +2023,13 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         outer.setSpacing(12)
         outer.addWidget(self.splitter, 1)
         self.setCentralWidget(central)
+        self._outer_layout = outer
+        self.world_map_overlay = WorldMapOverlay(self.shared, central)
+        self.world_map_overlay.set_player_provider(self.view3d.get_minimap_player_marker)
+        self.world_map_overlay.clickedWorld.connect(self._center_to)
+        self.world_map_overlay.closed.connect(self._on_world_map_closed)
+        central.installEventFilter(self)
+        QtWidgets.QApplication.instance().installEventFilter(self)
 
         # 7) статусбар
         self.statusBar().setStyleSheet(STATUSBAR_STYLE)
@@ -921,14 +2058,37 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
         # 11) начальный пуш снапшота
         self.bridge._push_snapshot()
-        self._place_overlays()
+        self._schedule_overlay_relayout()
+        self._on_first_person_changed(self.view3d.is_first_person_mode())
 
     # --- eventFilter для перекладки оверлеев
     def eventFilter(self, obj, ev):
+        if ev.type() in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease):
+            if self._forward_key_event_to_view3d(ev, source=obj):
+                return True
         if ev.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show):
-            if hasattr(self, "_place_overlays"):
-                QtCore.QTimer.singleShot(0, self._place_overlays)
+            watched = {
+                self,
+                self.centralWidget(),
+                getattr(self, "_frame3d", None),
+                getattr(self, "view3d", None),
+                getattr(self, "splitter", None),
+            }
+            if obj in watched:
+                self._schedule_overlay_relayout()
         return super().eventFilter(obj, ev)
+
+    def _schedule_overlay_relayout(self):
+        if self._overlay_relayout_pending or not hasattr(self, "_place_overlays"):
+            return
+        self._overlay_relayout_pending = True
+        QtCore.QTimer.singleShot(0, self._flush_overlay_relayout)
+
+    @Slot()
+    def _flush_overlay_relayout(self):
+        self._overlay_relayout_pending = False
+        if hasattr(self, "_place_overlays"):
+            self._place_overlays()
 
     def _resize_world_if_needed(self, world, target_w: float, target_h: float) -> bool:
         """
@@ -1142,6 +2302,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         tb = QtWidgets.QToolBar("Controls", self)
         tb.setMovable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        self._main_toolbar = tb
 
         # Play/Pause боя
         self.act_play = QtGui.QAction(self.style().standardIcon(QStyle.SP_MediaPause), "Play/Pause бой (Space)", self)
@@ -1166,6 +2327,17 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         act_next.setShortcut("Tab")
         act_next.triggered.connect(lambda: self.view3d.keyPressEvent(QtGui.QKeyEvent(QtCore.QEvent.KeyPress, Qt.Key_Tab, Qt.NoModifier)))
         tb.addAction(act_next)
+
+        self.act_first_person = QtGui.QAction("1st Person (V)", self, checkable=True)
+        self.act_first_person.setShortcut("V")
+        self.act_first_person.toggled.connect(self._toggle_first_person)
+        tb.addAction(self.act_first_person)
+
+        self.act_game_fullscreen = QtGui.QAction("Game Fullscreen (F11)", self, checkable=True)
+        self.act_game_fullscreen.setShortcut("F11")
+        self.act_game_fullscreen.toggled.connect(self._toggle_game_fullscreen)
+        self.addAction(self.act_game_fullscreen)
+        tb.addAction(self.act_game_fullscreen)
 
         tb.addSeparator()
 
@@ -1253,30 +2425,207 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         w = self.trainer.world
         if not w:
             return
-        ag = None
-        if hasattr(w, "get_agent_by_id"):
-            ag = w.get_agent_by_id(agent_id)
-        else:
-            for a in _iter_vals(getattr(w, "agents", [])):
-                if getattr(a, "id", None) == agent_id:
-                    ag = a; break
-        if ag is None:
-            return
         x = max(0.0, min(w.width, x))
         z = max(0.0, min(w.height, z))
-        if hasattr(ag, "set_goal"):
-            try: ag.set_goal(x, z)
+        if hasattr(w, "set_agent_goal"):
+            try:
+                ok = bool(w.set_agent_goal(agent_id, x, z))
             except Exception:
-                setattr(ag, "goal_x", x); setattr(ag, "goal_y", z)
+                ok = False
+            if not ok:
+                return
         else:
-            setattr(ag, "goal_x", x); setattr(ag, "goal_y", z)
-
-        if hasattr(w, "add_chat_line"):
-            try: w.add_chat_line(f"[observer] {getattr(ag,'name',agent_id)} → goal=({x:.1f},{z:.1f})")
-            except Exception: pass
+            ag = None
+            if hasattr(w, "get_agent_by_id"):
+                ag = w.get_agent_by_id(agent_id)
+            else:
+                for a in _iter_vals(getattr(w, "agents", [])):
+                    if getattr(a, "id", None) == agent_id:
+                        ag = a
+                        break
+            if ag is None:
+                return
+            if hasattr(ag, "set_goal"):
+                try:
+                    ag.set_goal(x, z, reason="external_command", tick=getattr(w, "tick_count", 0))
+                except Exception:
+                    setattr(ag, "goal_x", x)
+                    setattr(ag, "goal_y", z)
+            else:
+                setattr(ag, "goal_x", x)
+                setattr(ag, "goal_y", z)
+            if hasattr(w, "add_chat_line"):
+                try:
+                    w.add_chat_line(f"[observer] {getattr(ag, 'name', agent_id)} → goal=({x:.1f},{z:.1f})")
+                except Exception:
+                    pass
 
         self.bridge._push_snapshot()
         self._toast(f"Goal for {agent_id} → ({x:.1f}, {z:.1f})")
+
+    def _get_world_agent_by_id(self, world, agent_id: Optional[str]):
+        if world is None or not agent_id:
+            return None
+        if hasattr(world, "get_agent_by_id"):
+            try:
+                ag = world.get_agent_by_id(agent_id)
+                if ag is not None:
+                    return ag
+            except Exception:
+                pass
+        for ag in _iter_vals(getattr(world, "agents", {})):
+            if getattr(ag, "id", None) == agent_id or getattr(ag, "agent_id", None) == agent_id:
+                return ag
+        return None
+
+    def _sync_engine_agent_from_world(self, ag, *, facing_x: float, facing_z: float) -> None:
+        aid = str(getattr(ag, "id", getattr(ag, "agent_id", "")) or "")
+        if not aid:
+            return
+        ent = self.engine.agents.get(aid)
+        if ent is None:
+            return
+        px = float(getattr(ag, "x", ent.transform.pos.x))
+        pz = float(getattr(ag, "y", ent.transform.pos.z))
+        vx = float(getattr(ag, "vx", 0.0))
+        vz = float(getattr(ag, "vy", 0.0))
+        ent.name = str(getattr(ag, "name", ent.name))
+        ent.transform.pos.x = px
+        ent.transform.pos.z = pz
+        ent.target_pos.x = px
+        ent.target_pos.z = pz
+        ent.net.server_pos.x = px
+        ent.net.server_pos.z = pz
+        ent.net.server_vel.x = vx
+        ent.net.server_vel.z = vz
+        ent.net.since_snap = 0.0
+        ent.body.vel.x = vx
+        ent.body.vel.z = vz
+        dir_x = float(facing_x)
+        dir_z = float(facing_z)
+        vel_len = math.hypot(vx, vz)
+        if vel_len > 1e-6:
+            dir_x = vx / vel_len
+            dir_z = vz / vel_len
+        else:
+            face_len = math.hypot(dir_x, dir_z)
+            if face_len > 1e-6:
+                dir_x /= face_len
+                dir_z /= face_len
+            else:
+                dir_x = float(getattr(ent.brain.desired_dir, "x", 1.0))
+                dir_z = float(getattr(ent.brain.desired_dir, "z", 0.0))
+        ent.brain.desired_dir.x = dir_x
+        ent.brain.desired_dir.z = dir_z
+        try:
+            alive = bool(getattr(ag, "is_alive", lambda: True)())
+        except Exception:
+            alive = bool(getattr(ag, "alive", True))
+        ps = dict(getattr(ent, "public_state", {}) or {})
+        energy = float(getattr(ag, "energy", ps.get("energy", 100.0)))
+        hunger = float(getattr(ag, "hunger", ps.get("hunger", 0.0)))
+        if energy <= 1.5:
+            energy *= 100.0
+        if hunger <= 1.5:
+            hunger *= 100.0
+        ent.anim.alive = alive
+        ps["id"] = aid
+        ps["name"] = ent.name
+        ps["alive"] = alive
+        ps["pos"] = {"x": px, "y": pz}
+        ps["vel"] = {"x": vx, "y": vz}
+        ps["goal"] = {
+            "x": float(getattr(ag, "goal_x", px)),
+            "y": float(getattr(ag, "goal_y", pz)),
+        }
+        ps["facing"] = {"x": dir_x, "y": dir_z}
+        ps["health"] = float(getattr(ag, "health", ps.get("health", 100.0)))
+        ps["energy"] = energy
+        ps["hunger"] = hunger
+        ps["fear"] = float(getattr(ag, "fear", ps.get("fear", 0.0)))
+        ent.public_state = ps
+
+    def _drive_player_agent(
+        self,
+        agent_id: str,
+        x: float,
+        z: float,
+        dt: float,
+        facing_x: float,
+        facing_z: float,
+        speed_mode: str,
+    ) -> Dict[str, Any]:
+        world = self.trainer.world
+        if world is None:
+            return {"ok": False, "x": float(x), "z": float(z)}
+        ag = self._get_world_agent_by_id(world, agent_id)
+        if ag is None:
+            return {"ok": False, "x": float(x), "z": float(z)}
+        try:
+            alive = bool(getattr(ag, "is_alive", lambda: True)())
+        except Exception:
+            alive = bool(getattr(ag, "alive", True))
+        if not alive:
+            return {
+                "ok": False,
+                "x": float(getattr(ag, "x", x)),
+                "z": float(getattr(ag, "y", z)),
+            }
+
+        nx = max(0.0, min(float(getattr(world, "width", x)), float(x)))
+        nz = max(0.0, min(float(getattr(world, "height", z)), float(z)))
+        ok = False
+        if hasattr(world, "drive_agent"):
+            try:
+                ok = bool(world.drive_agent(
+                    agent_id,
+                    nx,
+                    nz,
+                    max(float(dt), 1e-6),
+                    facing=(float(facing_x), float(facing_z)),
+                    source=f"player:{speed_mode}",
+                    hold_ticks=4,
+                ))
+            except Exception:
+                ok = False
+        if not ok:
+            old_x = float(getattr(ag, "x", nx))
+            old_y = float(getattr(ag, "y", nz))
+            setattr(ag, "x", nx)
+            setattr(ag, "y", nz)
+            setattr(ag, "goal_x", nx)
+            setattr(ag, "goal_y", nz)
+            denom = max(float(dt), 1e-6)
+            try:
+                setattr(ag, "vx", (nx - old_x) / denom)
+                setattr(ag, "vy", (nz - old_y) / denom)
+            except Exception:
+                pass
+            if hasattr(ag, "mark_manual_control"):
+                try:
+                    ag.mark_manual_control(
+                        tick=int(getattr(world, "tick_count", 0)),
+                        hold_ticks=4,
+                        source=f"player:{speed_mode}",
+                    )
+                except Exception:
+                    pass
+            face_len = math.hypot(float(facing_x), float(facing_z))
+            if face_len > 1e-6:
+                try:
+                    setattr(ag, "_manual_facing_x", float(facing_x) / face_len)
+                    setattr(ag, "_manual_facing_y", float(facing_z) / face_len)
+                except Exception:
+                    pass
+            ok = True
+
+        self._sync_engine_agent_from_world(ag, facing_x=float(facing_x), facing_z=float(facing_z))
+        return {
+            "ok": ok,
+            "x": float(getattr(ag, "x", nx)),
+            "z": float(getattr(ag, "y", nz)),
+            "name": str(getattr(ag, "name", agent_id)),
+        }
 
     # --- синхронизация выделения (3D -> инспектор)
     @Slot()
@@ -1303,6 +2652,10 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
     # --- центрирование камеры (из мини-карты)
     def _center_to(self, x: float, y: float):
+        if self.view3d.is_first_person_mode():
+            self.view3d.move_first_person_to(x, y)
+            self._toast(f"Player → ({x:.1f}, {y:.1f})")
+            return
         self.view3d.center_x, self.view3d.center_z = x, y
         self.view3d._clamp_center()
         self.view3d.update()
@@ -1313,7 +2666,9 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self._lbl_fps.setText(f"FPS: {fps:0.1f}")
 
     def _tick_ui(self):
-        self._lbl_cam.setText(f"Cam: x={self.view3d.center_x:0.1f}, z={self.view3d.center_z:0.1f}, dist={self.view3d.distance:0.0f}")
+        self._lbl_cam.setText(self.view3d.camera_status_text())
+        self.fp_overlay.set_state(self.view3d.get_first_person_hud_state())
+        self.minimap.update()
 
     # --- тост
     def _toast(self, text: str):
@@ -1350,6 +2705,204 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             else:
                 self.splitter.setSizes([420, 900, 420])
             self._toast("Zen off")
+
+    def _set_game_fullscreen(self, on: bool):
+        on = bool(on)
+        if on == self._game_fullscreen:
+            if hasattr(self, "act_game_fullscreen"):
+                self.act_game_fullscreen.blockSignals(True)
+                self.act_game_fullscreen.setChecked(on)
+                self.act_game_fullscreen.blockSignals(False)
+            return
+
+        if on:
+            margins = self._outer_layout.contentsMargins() if self._outer_layout is not None else QtCore.QMargins(12, 12, 12, 12)
+            frame_margins = self._frame3d_layout.contentsMargins() if self._frame3d_layout is not None else QtCore.QMargins(10, 10, 10, 10)
+            self._game_fullscreen_saved_ui = {
+                "splitter_sizes": self.splitter.sizes(),
+                "stats_visible": self.stats_card.isVisible(),
+                "brain_visible": self.brain_card.isVisible(),
+                "toolbar_visible": bool(self._main_toolbar and self._main_toolbar.isVisible()),
+                "status_visible": self.statusBar().isVisible(),
+                "help_visible": self.help_overlay.isVisible(),
+                "minimap_visible": self.minimap.isVisible(),
+                "live_visible": self.live_pill.isVisible(),
+                "hud_visible": self.hud_overlay.isVisible(),
+                "outer_margins": (margins.left(), margins.top(), margins.right(), margins.bottom()),
+                "outer_spacing": self._outer_layout.spacing() if self._outer_layout is not None else 12,
+                "frame_margins": (frame_margins.left(), frame_margins.top(), frame_margins.right(), frame_margins.bottom()),
+                "frame_spacing": self._frame3d_layout.spacing() if self._frame3d_layout is not None else 8,
+            }
+
+            self.stats_card.hide()
+            self.brain_card.hide()
+            self.splitter.setSizes([0, 1, 0])
+            if self._main_toolbar is not None:
+                self._main_toolbar.hide()
+            self.statusBar().hide()
+            self.help_overlay.hide()
+            self.minimap.hide()
+            self.live_pill.hide()
+            self.hud_overlay.hide()
+            if self._outer_layout is not None:
+                self._outer_layout.setContentsMargins(0, 0, 0, 0)
+                self._outer_layout.setSpacing(0)
+            if self._frame3d_layout is not None:
+                self._frame3d_layout.setContentsMargins(0, 0, 0, 0)
+                self._frame3d_layout.setSpacing(0)
+            self.showFullScreen()
+            self._game_fullscreen = True
+            self._schedule_overlay_relayout()
+            self.statusBar().showMessage("Game fullscreen: on", 1200)
+        else:
+            saved = dict(self._game_fullscreen_saved_ui or {})
+            self.showNormal()
+            self._game_fullscreen = False
+            if self._outer_layout is not None:
+                l, t, r, b = saved.get("outer_margins", (12, 12, 12, 12))
+                self._outer_layout.setContentsMargins(int(l), int(t), int(r), int(b))
+                self._outer_layout.setSpacing(int(saved.get("outer_spacing", 12)))
+            if self._frame3d_layout is not None:
+                l, t, r, b = saved.get("frame_margins", (10, 10, 10, 10))
+                self._frame3d_layout.setContentsMargins(int(l), int(t), int(r), int(b))
+                self._frame3d_layout.setSpacing(int(saved.get("frame_spacing", 8)))
+            if saved.get("stats_visible", True):
+                self.stats_card.show()
+            if saved.get("brain_visible", True):
+                self.brain_card.show()
+            if self._main_toolbar is not None and saved.get("toolbar_visible", True):
+                self._main_toolbar.show()
+            if saved.get("status_visible", True):
+                self.statusBar().show()
+            if saved.get("help_visible", True) and getattr(self, "act_help", None) and self.act_help.isChecked():
+                self.help_overlay.show()
+            if saved.get("minimap_visible", True):
+                self.minimap.show()
+            if saved.get("live_visible", True):
+                self.live_pill.show()
+            self.hud_overlay.setVisible(bool(saved.get("hud_visible", True)) and not self.view3d.is_first_person_mode())
+            sizes = saved.get("splitter_sizes")
+            if isinstance(sizes, list):
+                try:
+                    self.splitter.setSizes([int(x) for x in sizes])
+                except Exception:
+                    pass
+            self._schedule_overlay_relayout()
+            if self.statusBar().isVisible():
+                self.statusBar().showMessage("Game fullscreen: off", 1200)
+
+        if hasattr(self, "act_game_fullscreen"):
+            self.act_game_fullscreen.blockSignals(True)
+            self.act_game_fullscreen.setChecked(bool(self._game_fullscreen))
+            self.act_game_fullscreen.blockSignals(False)
+
+    @Slot(bool)
+    def _toggle_game_fullscreen(self, on: bool):
+        self._set_game_fullscreen(bool(on))
+
+    @Slot()
+    def _toggle_game_fullscreen_shortcut(self):
+        self._set_game_fullscreen(not self._game_fullscreen)
+
+    def _help_text_for_current_mode(self) -> str:
+        if self.view3d.is_first_person_mode():
+            return "FPS: при входе открывается карта мира • M/Ь — карта • F11 — игровой fullscreen • мышь — обзор • WASD/ЦФЫВ — вести выбранного агента • Shift — бег • Ctrl — точный шаг • Q/Й — курсор • E/У или LMB — выбрать цель • RMB/G/П — goal • F/А — к агенту • Tab — след. • V/М или Esc — выход"
+        return "ЛКМ — выбрать • ПКМ — приказать • Ctrl+ПКМ — меню • RMB — орбита • MMB — пан • колесо — зум • F11 — игровой fullscreen • V/М — first person • Tab — след. • F/А — фокус • R/К — сброс • Ctrl+W — волки"
+
+    def _forward_key_event_to_view3d(self, e: QtGui.QKeyEvent, *, source=None) -> bool:
+        if not hasattr(self, "view3d"):
+            return False
+        if source is self.world_map_overlay:
+            return False
+        if isinstance(source, (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QAbstractSpinBox)):
+            return False
+        key = _normalize_control_key_event(e)
+        always_keys = {Qt.Key_V, Qt.Key_R, Qt.Key_F, Qt.Key_Tab, Qt.Key_F11}
+        if hasattr(self, "world_map_overlay") and self.world_map_overlay.isVisible():
+            return False
+        if not self.view3d.is_first_person_mode() and key not in always_keys:
+            return False
+        forward_keys = {
+            Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D,
+            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+            Qt.Key_Shift, Qt.Key_Control,
+            Qt.Key_Q, Qt.Key_E, Qt.Key_G, Qt.Key_M,
+            Qt.Key_R, Qt.Key_F, Qt.Key_Tab,
+            Qt.Key_V, Qt.Key_Escape, Qt.Key_F11,
+        }
+        if key not in forward_keys:
+            return False
+        self.view3d.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        cloned = QtGui.QKeyEvent(
+            e.type(),
+            key,
+            e.modifiers(),
+            e.text(),
+            e.isAutoRepeat(),
+            e.count(),
+        )
+        if e.type() == QtCore.QEvent.Type.KeyPress:
+            self.view3d.keyPressEvent(cloned)
+        else:
+            self.view3d.keyReleaseEvent(cloned)
+        e.accept()
+        return True
+
+    def keyPressEvent(self, e: QtGui.QKeyEvent):
+        if self._forward_key_event_to_view3d(e):
+            return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e: QtGui.QKeyEvent):
+        if self._forward_key_event_to_view3d(e):
+            return
+        super().keyReleaseEvent(e)
+
+    def _show_world_map_overlay(self):
+        if not hasattr(self, "world_map_overlay") or not self.view3d.is_first_person_mode():
+            return
+        self.view3d.suspend_first_person_capture()
+        self.world_map_overlay.setGeometry(self.centralWidget().rect())
+        self.world_map_overlay.show_map()
+        self.statusBar().showMessage("Карта мира открыта: ЛКМ — перейти, Esc/M — закрыть", 2400)
+
+    def _toggle_world_map_overlay(self):
+        if not hasattr(self, "world_map_overlay") or not self.view3d.is_first_person_mode():
+            return
+        if self.world_map_overlay.isVisible():
+            self.world_map_overlay.hide_map()
+            return
+        self._show_world_map_overlay()
+
+    @Slot()
+    def _on_world_map_closed(self):
+        if self.view3d.is_first_person_mode():
+            self.view3d.resume_first_person_capture()
+        self.statusBar().showMessage("Карта мира закрыта", 1200)
+
+    @Slot(bool)
+    def _toggle_first_person(self, on: bool):
+        self.view3d.set_first_person_mode(bool(on))
+
+    @Slot(bool)
+    def _on_first_person_changed(self, on: bool):
+        if hasattr(self, "act_first_person"):
+            self.act_first_person.blockSignals(True)
+            self.act_first_person.setChecked(bool(on))
+            self.act_first_person.blockSignals(False)
+        if hasattr(self, "hud_overlay"):
+            self.hud_overlay.setVisible(not on)
+        if hasattr(self, "help_overlay"):
+            self.help_overlay.setText(self._help_text_for_current_mode())
+        self._schedule_overlay_relayout()
+        if hasattr(self, "fp_overlay"):
+            self.fp_overlay.set_state(self.view3d.get_first_person_hud_state())
+        if hasattr(self, "world_map_overlay"):
+            if on:
+                QtCore.QTimer.singleShot(0, self._show_world_map_overlay)
+            elif self.world_map_overlay.isVisible():
+                self.world_map_overlay.hide_map()
+        self.statusBar().showMessage("First person: on" if on else "First person: off", 1800)
 
     # --- Theme
     def _toggle_theme(self):
@@ -1400,11 +2953,14 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
                 self.splitter.setSizes([int(x) for x in split])
             except Exception:
                 pass
+        if self._pending_restore_game_fullscreen:
+            QtCore.QTimer.singleShot(0, lambda: self._set_game_fullscreen(True))
 
     def closeEvent(self, e: QtGui.QCloseEvent):
         self.settings.setValue("geo", self.saveGeometry())
         self.settings.setValue("state", self.saveState())
         self.settings.setValue("splitter", self.splitter.sizes())
+        self.settings.setValue("game_fullscreen", bool(self._game_fullscreen))
         super().closeEvent(e)
 
 
@@ -1413,6 +2969,12 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 # ====================================================
 def _belief_to_dict(b) -> Dict[str, Any]:
     try:
+        if isinstance(b, dict):
+            return {
+                "if": str(b.get("if") or b.get("condition") or ""),
+                "then": str(b.get("then") or b.get("conclusion") or ""),
+                "strength": float(b.get("strength", 0.0) or 0.0),
+            }
         return {
             "if": getattr(b, "condition", ""),
             "then": getattr(b, "conclusion", ""),
@@ -1421,12 +2983,56 @@ def _belief_to_dict(b) -> Dict[str, Any]:
     except Exception:
         return {}
 
+def _memory_to_dict(ev) -> Dict[str, Any]:
+    try:
+        if isinstance(ev, dict):
+            data = ev.get("data")
+            if not isinstance(data, dict):
+                data = {
+                    k: v for k, v in ev.items()
+                    if k not in ("type", "etype", "kind", "tick", "level", "actor", "pos", "private")
+                }
+            pos = ev.get("pos")
+            if isinstance(pos, list):
+                pos = tuple(pos)
+            return {
+                "type": str(ev.get("type") or ev.get("etype") or ev.get("kind") or "event"),
+                "tick": ev.get("tick"),
+                "level": str(ev.get("level", "info")),
+                "actor": ev.get("actor"),
+                "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+                "data": dict(data),
+            }
+        pos = getattr(ev, "pos", None)
+        if isinstance(pos, list):
+            pos = tuple(pos)
+        return {
+            "type": str(getattr(ev, "etype", getattr(ev, "type", "event"))),
+            "tick": getattr(ev, "tick", None),
+            "level": str(getattr(ev, "level", "info")),
+            "actor": getattr(ev, "actor", None),
+            "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+            "data": dict(getattr(ev, "data", {}) or {}),
+        }
+    except Exception:
+        return {}
+
 def _brain_to_dict(brain) -> Dict[str, Any]:
     if brain is None:
         return {}
-    rules_obj = getattr(brain, "behavior_rules", None)
+    if isinstance(brain, dict):
+        data = dict(brain)
+        rules_obj = data.get("behavior_rules", {})
+    else:
+        try:
+            data = dict(brain.export_public_state_for_ui() or {})
+        except Exception:
+            data = {}
+        rules_obj = data.get("behavior_rules", getattr(brain, "behavior_rules", None))
     rules: Dict[str, Any] = {}
-    if rules_obj is not None:
+    if isinstance(rules_obj, dict):
+        rules = dict(rules_obj)
+    elif rules_obj is not None:
         for k in dir(rules_obj):
             if k.startswith("_"):
                 continue
@@ -1438,24 +3044,83 @@ def _brain_to_dict(brain) -> Dict[str, Any]:
                 rules[k] = v
     beliefs = []
     try:
-        for b in list(getattr(brain, "beliefs", []) or [])[-60:]:
+        beliefs_src = data.get("beliefs", getattr(brain, "beliefs", [])) if not isinstance(brain, dict) else data.get("beliefs", [])
+        for b in list(beliefs_src or [])[-60:]:
             beliefs.append(_belief_to_dict(b))
     except Exception:
         pass
     mem_tail = []
     try:
-        mem_tail = list(getattr(brain, "memory_tail", []) or [])[-40:]
+        mem_src = data.get("memory_tail", getattr(brain, "memory_tail", [])) if not isinstance(brain, dict) else data.get("memory_tail", [])
+        mem_tail = [_memory_to_dict(ev) for ev in list(mem_src or [])[-40:]]
     except Exception:
         pass
     return {
-        "current_drive": getattr(brain, "current_drive", None),
-        "survival_score": getattr(brain, "survival_score", None),
+        "current_drive": data.get("current_drive", getattr(brain, "current_drive", None) if not isinstance(brain, dict) else None),
+        "survival_score": data.get("survival_score", getattr(brain, "survival_score", None) if not isinstance(brain, dict) else None),
         "behavior_rules": rules,
         "beliefs": beliefs,
         "memory_tail": mem_tail,
     }
 
 def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
+    if hasattr(world, "snapshot") and callable(getattr(world, "snapshot")):
+        try:
+            snap = dict(world.snapshot() or {})
+            snap["tick"] = int(snap.get("tick", tick))
+            snap["world"] = {
+                "width": float((snap.get("world", {}) or {}).get("width", getattr(world, "width", 100.0))),
+                "height": float((snap.get("world", {}) or {}).get("height", getattr(world, "height", 100.0))),
+            }
+
+            chat_src = snap.get("chat")
+            if not isinstance(chat_src, list):
+                if hasattr(world, "chat_log") and isinstance(world.chat_log, list):
+                    chat_src = world.chat_log
+                elif hasattr(world, "chat") and isinstance(world.chat, list):
+                    chat_src = world.chat
+                else:
+                    chat_src = []
+            snap["chat"] = [str(x) for x in list(chat_src)[-200:]]
+
+            events_src = snap.get("events")
+            if not isinstance(events_src, list):
+                events_src = list(getattr(world, "event_log", []) or getattr(world, "events", []) or [])
+            snap["events"] = list(events_src)[-200:]
+
+            if not snap.get("global_events"):
+                snap["global_events"] = [
+                    f"[t={ev.get('tick', snap['tick'])}] {ev.get('type', 'event')}: "
+                    f"{ev.get('name') or ev.get('who') or ev.get('victim_name') or ev.get('target') or ''}".rstrip(": ")
+                    for ev in snap["events"][-100:]
+                ]
+
+            agents_norm: List[Dict[str, Any]] = []
+            for ag in list(snap.get("agents", []) or []):
+                if not isinstance(ag, dict):
+                    continue
+                row = dict(ag)
+                row["mind"] = _brain_to_dict(row.get("mind") or row.get("consciousness"))
+                if "memory_tail" in row:
+                    row["memory_tail"] = [_memory_to_dict(ev) for ev in list(row.get("memory_tail", []) or [])[-40:]]
+                try:
+                    energy = float(row.get("energy", 100.0))
+                    if energy <= 1.5:
+                        row["energy"] = energy * 100.0
+                except Exception:
+                    pass
+                try:
+                    hunger = float(row.get("hunger", 0.0))
+                    if hunger <= 1.5:
+                        row["hunger"] = hunger * 100.0
+                except Exception:
+                    pass
+                agents_norm.append(row)
+            snap["agents"] = agents_norm
+            return snap
+        except Exception:
+            pass
+
     agents_pack: List[Dict[str, Any]] = []
     for ag in _iter_vals(getattr(world, "agents", [])):
         brain = getattr(ag, "brain", None)
@@ -1468,8 +3133,8 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
             "vel": {"x": float(getattr(ag, "vx", 0.0)), "y": float(getattr(ag, "vy", 0.0))},
             "fear": float(getattr(ag, "fear", 0.0)),
             "health": float(getattr(ag, "health", 100.0)),
-            "energy": float(getattr(ag, "energy", 100.0)),
-            "hunger": float(getattr(ag, "hunger", 0.0)),
+            "energy": float(getattr(ag, "energy", 100.0)) * 100.0 if float(getattr(ag, "energy", 100.0)) <= 1.5 else float(getattr(ag, "energy", 100.0)),
+            "hunger": float(getattr(ag, "hunger", 0.0)) * 100.0 if float(getattr(ag, "hunger", 0.0)) <= 1.5 else float(getattr(ag, "hunger", 0.0)),
             "age_ticks": int(getattr(ag, "age_ticks", 0)),
             "alive": bool(getattr(ag, "is_alive", lambda: True)()),
             "cause_of_death": getattr(ag, "cause_of_death", None),
@@ -1504,6 +3169,8 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
     chat_lines: List[str] = []
     if hasattr(world, "chat") and isinstance(world.chat, list):
         chat_lines = [str(x) for x in world.chat[-200:]]
+    elif hasattr(world, "chat_log") and isinstance(world.chat_log, list):
+        chat_lines = [str(x) for x in world.chat_log[-200:]]
 
     snap: Dict[str, Any] = {
         "tick": int(tick),
@@ -1513,8 +3180,13 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
         "objects": objects_pack,
         "animals": animals_pack,
         "chat": chat_lines,
-        "events": [],
+        "events": list(getattr(world, "event_log", []) or [])[-200:],
     }
+    snap["global_events"] = [
+        f"[t={ev.get('tick', tick)}] {ev.get('type', 'event')}: "
+        f"{ev.get('name') or ev.get('who') or ev.get('victim_name') or ev.get('target') or ''}".rstrip(": ")
+        for ev in snap["events"][-100:]
+    ]
     return snap
 
 

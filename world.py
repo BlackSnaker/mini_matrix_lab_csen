@@ -167,6 +167,59 @@ def _num(x, default=0.0):
     except Exception:
         return float(default)
 
+
+def _pct_metric(x, default=0.0):
+    v = _num(x, default)
+    if v <= 1.5:
+        v *= 100.0
+    return max(0.0, min(100.0, v))
+
+
+def _belief_public_view(b: Any) -> Dict[str, Any]:
+    if isinstance(b, dict):
+        return {
+            "if": str(b.get("if") or b.get("condition") or ""),
+            "then": str(b.get("then") or b.get("conclusion") or ""),
+            "strength": _num(b.get("strength", 0.0), 0.0),
+        }
+    return {
+        "if": str(getattr(b, "condition", "")),
+        "then": str(getattr(b, "conclusion", "")),
+        "strength": _num(getattr(b, "strength", 0.0), 0.0),
+    }
+
+
+def _memory_public_view(ev: Any) -> Dict[str, Any]:
+    if isinstance(ev, dict):
+        data = ev.get("data")
+        if not isinstance(data, dict):
+            data = {
+                k: v for k, v in ev.items()
+                if k not in ("type", "etype", "kind", "tick", "level", "actor", "pos", "private")
+            }
+        pos = ev.get("pos")
+        if isinstance(pos, list):
+            pos = tuple(pos)
+        return {
+            "type": str(ev.get("type") or ev.get("etype") or ev.get("kind") or "event"),
+            "tick": ev.get("tick"),
+            "level": str(ev.get("level", "info")),
+            "actor": ev.get("actor"),
+            "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+            "data": dict(data),
+        }
+    pos = getattr(ev, "pos", None)
+    if isinstance(pos, list):
+        pos = tuple(pos)
+    return {
+        "type": str(getattr(ev, "etype", getattr(ev, "type", "event"))),
+        "tick": getattr(ev, "tick", None),
+        "level": str(getattr(ev, "level", "info")),
+        "actor": getattr(ev, "actor", None),
+        "pos": pos if isinstance(pos, tuple) and len(pos) == 2 else None,
+        "data": dict(getattr(ev, "data", {}) or {}),
+    }
+
 def _agent_default_public(self: Agent) -> Dict[str, Any]:
     """Публичное, безопасное представление агента для стрима/клиента."""
     try:
@@ -178,6 +231,37 @@ def _agent_default_public(self: Agent) -> Dict[str, Any]:
         )
     except Exception:
         yaw = 0.0
+
+    memory_tail: List[Dict[str, Any]] = []
+    mem = getattr(self, "memory", None)
+    if mem is not None and hasattr(mem, "dump_public_view"):
+        try:
+            memory_tail = list(mem.dump_public_view(tail=8))
+        except Exception:
+            memory_tail = []
+    if not memory_tail:
+        try:
+            memory_tail = [
+                _memory_public_view(ev)
+                for ev in list(getattr(getattr(self, "brain", None), "memory_tail", []) or [])[-8:]
+            ]
+        except Exception:
+            memory_tail = []
+
+    mind: Dict[str, Any] = {}
+    brain = getattr(self, "brain", None)
+    if brain is not None:
+        try:
+            mind = dict(brain.export_public_state_for_ui() or {})
+        except Exception:
+            mind = {}
+        try:
+            beliefs_src = mind.get("beliefs", getattr(brain, "beliefs", [])) or []
+            memory_src = mind.get("memory_tail", getattr(brain, "memory_tail", [])) or []
+            mind["beliefs"] = [_belief_public_view(b) for b in list(beliefs_src)[-20:]]
+            mind["memory_tail"] = [_memory_public_view(ev) for ev in list(memory_src)[-20:]]
+        except Exception:
+            pass
 
     out = {
         "id": getattr(self, "id", None),
@@ -192,11 +276,15 @@ def _agent_default_public(self: Agent) -> Dict[str, Any]:
 
         # Унифицируем метрики состояния
         "health": _num(getattr(self, "health", getattr(self, "hp", 100.0))),
-        "energy": _num(getattr(self, "energy", 100.0)),
-        "hunger": _num(getattr(self, "hunger", 0.0)),
+        "energy": _pct_metric(getattr(self, "energy", 100.0), 100.0),
+        "hunger": _pct_metric(getattr(self, "hunger", 0.0), 0.0),
         "fear":   _num(getattr(self, "fear", 0.0)),
-        "alive":  bool(getattr(self, "alive", True)),
+        "alive":  bool(self.is_alive()) if hasattr(self, "is_alive") else bool(getattr(self, "alive", True)),
         "age_ticks": int(getattr(self, "age_ticks", 0)),
+        "danger_zones_count": int(len(getattr(self, "danger_zones", []) or [])),
+        "hazards_known": int(len(getattr(self, "known_hazards", {}) or {})),
+        "memory_tail": memory_tail,
+        "mind": mind,
 
         # Необязательные поля для HUD
         "tags": list(getattr(self, "tags", [])) if hasattr(self, "tags") else [],
@@ -300,6 +388,8 @@ class World:
 
         self.chat_log: List[str] = []
         self.event_log: List[Dict[str, Any]] = []
+        self.chat = self.chat_log
+        self.events = self.event_log
 
         # Кулдауны ударов агентов (tick номер, раньше — нельзя)
         self._agent_next_attack_tick: Dict[str, int] = {}
@@ -309,8 +399,7 @@ class World:
         self.agent_reproduction = AgentReproductionSystem(self)
 
         # Назначаем глобальный синк (и вливаем отложенные события)
-        if _GLOBAL_WORLD_EVENT_SINK is None:
-            set_global_event_sink(self)
+        set_global_event_sink(self)
 
     # -----------------------------------------------------------------
     # нормализация/итерация животных
@@ -403,6 +492,9 @@ class World:
             who = agent.name if agent else aid
             self.add_chat_line(f"[brain] обновлён мозг {who or '<?>'}")
 
+    def push_event(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        self.push_global_event(kind, **dict(payload or {}))
+
     def announce_death(self, agent: Agent, reason: str):
         self.add_chat_line(f"[DEATH] {agent.name} погиб ({reason}) в t={self.tick_count}")
         self.add_event({"type": "death", "who": agent.id, "name": agent.name, "reason": reason})
@@ -411,11 +503,69 @@ class World:
         a = self.agents.get(agent_id)
         if a is None:
             return False
-        a.goal_x = x
-        a.goal_y = y
+        if hasattr(a, "set_goal"):
+            try:
+                a.set_goal(
+                    x,
+                    y,
+                    world_size=(float(self.width), float(self.height)),
+                    reason="external_command",
+                    tick=self.tick_count,
+                )
+            except Exception:
+                a.goal_x = max(0.0, min(float(self.width), float(x)))
+                a.goal_y = max(0.0, min(float(self.height), float(y)))
+        else:
+            a.goal_x = max(0.0, min(float(self.width), float(x)))
+            a.goal_y = max(0.0, min(float(self.height), float(y)))
         # лог и память остаются ответственностью агента/мозга в agent.py
-        self.add_chat_line(f"[CMD] {a.name} получил приказ двигаться к ({x:.1f}, {y:.1f})")
-        self.add_event({"type": "command_goal", "who": a.id, "name": a.name, "goal": (x, y)})
+        self.add_chat_line(f"[CMD] {a.name} получил приказ двигаться к ({float(a.goal_x):.1f}, {float(a.goal_y):.1f})")
+        self.add_event({"type": "command_goal", "who": a.id, "name": a.name, "goal": (float(a.goal_x), float(a.goal_y))})
+        return True
+
+    def drive_agent(
+        self,
+        agent_id: str,
+        x: float,
+        y: float,
+        dt: float,
+        *,
+        facing: Optional[Tuple[float, float]] = None,
+        source: str = "player",
+        hold_ticks: int = 3,
+    ) -> bool:
+        a = self.agents.get(agent_id)
+        if a is None or not getattr(a, "is_alive", lambda: True)():
+            return False
+        if hasattr(a, "apply_manual_control"):
+            try:
+                a.apply_manual_control(
+                    x,
+                    y,
+                    dt=max(float(dt), 1e-6),
+                    world_size=(float(self.width), float(self.height)),
+                    facing=facing,
+                    tick=self.tick_count,
+                    hold_ticks=max(1, int(hold_ticks)),
+                    source=source,
+                )
+                return True
+            except Exception:
+                pass
+        old_x = float(getattr(a, "x", 0.0))
+        old_y = float(getattr(a, "y", 0.0))
+        nx = max(0.0, min(float(self.width), float(x)))
+        ny = max(0.0, min(float(self.height), float(y)))
+        a.x = nx
+        a.y = ny
+        a.goal_x = nx
+        a.goal_y = ny
+        denom = max(float(dt), 1e-6)
+        try:
+            a.vx = (nx - old_x) / denom
+            a.vy = (ny - old_y) / denom
+        except Exception:
+            pass
         return True
 
     # -----------------------------------------------------------------
@@ -830,10 +980,13 @@ class World:
         # агенты для 3D
         agents_out: List[Dict[str, Any]] = []
         for a in self.agents.values():
+            base = a.serialize_public_state() if hasattr(a, "serialize_public_state") else _agent_default_public(a)
             yaw = _compute_yaw_deg(getattr(a, "vx", 0.0), getattr(a, "vy", 0.0), a.goal_x - a.x, a.goal_y - a.y)
             spd = _speed(getattr(a, "vx", 0.0), getattr(a, "vy", 0.0))
-            pos3 = _xy_to_xz(a.x, a.y)
-            goal3 = _xy_to_xz(a.goal_x, a.goal_y)
+            pos = base.get("pos", {"x": a.x, "y": a.y})
+            goal = base.get("goal", {"x": a.goal_x, "y": a.goal_y})
+            pos3 = _xy_to_xz(float(pos.get("x", a.x)), float(pos.get("y", a.y)))
+            goal3 = _xy_to_xz(float(goal.get("x", a.goal_x)), float(goal.get("y", a.goal_y)))
             danger_cloud = [{
                 "x": dx,
                 "y": dy,
@@ -841,33 +994,22 @@ class World:
                 "w": w,
             } for (dx, dy, w) in getattr(a, "danger_zones", [])[-24:]]
 
-            mind_public = a.brain.export_public_state_for_ui() if getattr(a, "brain", None) else {}
+            mind_public = dict(base.get("mind", {}) or {})
             last_thought = getattr(getattr(a, "brain", None), "last_thought", None)
-
-            agents_out.append({
-                "id": a.id,
-                "name": a.name,
-                "pos": {"x": a.x, "y": a.y},
+            agent_row = dict(base)
+            agent_row.update({
                 "pos3d": {"x": pos3[0], "y": pos3[1], "z": pos3[2]},
-                "vel": {"x": getattr(a, "vx", 0.0), "y": getattr(a, "vy", 0.0)},
                 "speed": spd,
-                "yaw": yaw,                     # в градусах (Y-up)
-                "goal": {"x": a.goal_x, "y": a.goal_y},
+                "yaw": yaw,
                 "goal3d": {"x": goal3[0], "y": goal3[1], "z": goal3[2]},
-                "fear": getattr(a, "fear", 0.0),
-                "health": getattr(a, "health", 100.0),
-                "energy": getattr(a, "energy", 100.0),
-                "hunger": getattr(a, "hunger", 0.0),
-                "alive": a.is_alive(),
-                "age_ticks": getattr(a, "age_ticks", 0),
                 "pets": pets_by_owner.get(a.id, []),
-                "danger_cloud": danger_cloud,   # для теплокарты боли
-                "mind": mind_public,            # для HUD-панелей
-                # DEBUG для HUD SidePanel:
+                "danger_cloud": danger_cloud,
+                "mind": mind_public,
                 "debug_last_thought": last_thought,
-                "goal_dbg": (a.goal_x, a.goal_y),
-                "age_dbg": getattr(a, "age_ticks", 0),
+                "goal_dbg": (goal.get("x", a.goal_x), goal.get("y", a.goal_y)),
+                "age_dbg": base.get("age_ticks", getattr(a, "age_ticks", 0)),
             })
+            agents_out.append(agent_row)
 
         # животные для 3D
         animals_out: List[Dict[str, Any]] = []
@@ -935,6 +1077,12 @@ class World:
             "animals": animals_out,
             "objects": objects_out,
             "chat": list(self.chat_log[-12:]),
+            "events": list(self.event_log[-16:]),
+            "global_events": [
+                f"[t={ev.get('tick', self.tick_count)}] {ev.get('type', 'event')}: "
+                f"{ev.get('name') or ev.get('who') or ev.get('victim_name') or ev.get('target') or ''}".rstrip(": ")
+                for ev in self.event_log[-16:]
+            ],
             "events_compact": events_compact,
         }
         return payload

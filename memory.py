@@ -52,8 +52,13 @@ class MemoryEvent:
         if isinstance(obj, MemoryEvent):
             return obj
         if isinstance(obj, dict):
-            t = obj.get("type") or obj.get("etype") or "event"
-            d = obj.get("data") or {}
+            t = obj.get("type") or obj.get("etype") or obj.get("kind") or "event"
+            d = obj.get("data")
+            if not isinstance(d, dict):
+                d = {
+                    k: v for k, v in obj.items()
+                    if k not in ("type", "etype", "kind", "tick", "private", "level", "actor", "pos")
+                }
             return MemoryEvent(
                 type=str(t),
                 data=dict(d),
@@ -118,6 +123,20 @@ class AgentMemory:
     def __init__(self, max_events: int = 200):
         self.max_events = max_events
         self._events: deque[MemoryEvent] = deque(maxlen=max_events)
+
+    @property
+    def events(self) -> List[Dict[str, Any]]:
+        """
+        Совместимый плоский список для trainer-кода, который ожидает events[-N:].
+        Прокидываем и `type`, и legacy-алиас `kind`.
+        """
+        out: List[Dict[str, Any]] = []
+        for ev in self._events:
+            row = ev.to_plain()
+            row["type"] = ev.type
+            row["kind"] = ev.type
+            out.append(row)
+        return out
 
     # ------------------------------------------------------------------
     # важность событий

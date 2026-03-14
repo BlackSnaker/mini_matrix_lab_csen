@@ -452,10 +452,14 @@ async def push_global_event(kind: str, payload: Dict):
     """
     try:
         async with world_lock:
-            if hasattr(world, "push_event") and callable(getattr(world, "push_event")):
+            if hasattr(world, "push_global_event") and callable(getattr(world, "push_global_event")):
+                world.push_global_event(kind, **dict(payload or {}))
+            elif hasattr(world, "push_event") and callable(getattr(world, "push_event")):
                 world.push_event(kind=kind, payload=payload)
+            elif hasattr(world, "add_event") and callable(getattr(world, "add_event")):
+                world.add_event({"type": kind, **dict(payload or {})})
             elif hasattr(world, "event_log"):
-                ev = {"tick": getattr(world, "tick_count", 0), "kind": kind, "data": payload}
+                ev = {"tick": getattr(world, "tick_count", 0), "type": kind, **dict(payload or {})}
                 world.event_log.append(ev)
                 lim = getattr(world, "MAX_EVENT_LOG", 200)
                 if isinstance(lim, int) and lim > 0:
@@ -463,7 +467,7 @@ async def push_global_event(kind: str, payload: Dict):
     except Exception:
         pass
 
-    msg = ServerMessage(type="event", data={"kind": kind, "payload": payload}).model_dump_json()
+    msg = ServerMessage(type="event", data={"type": kind, "kind": kind, "payload": payload}).model_dump_json()
     if manager.active:
         await manager.broadcast_text(msg)
     if sse.clients:

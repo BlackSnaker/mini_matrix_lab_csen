@@ -399,17 +399,22 @@ class ConsciousnessBlock:
 
         mem_tail: List[MemoryEvent] = []
         for ev in data.get("memory_tail", []) or []:
+            tick_raw = ev.get("tick", 0)
+            try:
+                tick_val = int(0 if tick_raw is None else tick_raw)
+            except Exception:
+                tick_val = 0
             mem_tail.append(MemoryEvent(
-                tick=int(ev.get("tick", 0)),
-                etype=str(ev.get("etype", "?")),
+                tick=tick_val,
+                etype=str(ev.get("etype") or ev.get("type") or ev.get("kind") or "?"),
                 data=dict(ev.get("data", {})),
             ))
 
         beliefs_list: List[Belief] = []
         for b in data.get("beliefs", []) or []:
             beliefs_list.append(Belief(
-                condition=str(b.get("condition", "")),
-                conclusion=str(b.get("conclusion", "")),
+                condition=str(b.get("condition") or b.get("if") or ""),
+                conclusion=str(b.get("conclusion") or b.get("then") or ""),
                 strength=_clamp(_safe_float(b.get("strength", 1.0), 1.0), 0.0, 1.0),
             ))
 
@@ -937,7 +942,11 @@ class ConsciousnessBlock:
             me = ev
         elif isinstance(ev, dict):
             etype = str(ev.get("etype") or ev.get("type") or ev.get("event") or "event")
-            tick = int(ev.get("tick", self.age_ticks))
+            tick_raw = ev.get("tick", self.age_ticks)
+            try:
+                tick = int(self.age_ticks if tick_raw is None else tick_raw)
+            except Exception:
+                tick = int(self.age_ticks)
             data = ev.get("data")
             if not isinstance(data, dict):
                 data = {k: v for k, v in ev.items() if k not in ("tick", "etype", "type", "event")}
@@ -965,6 +974,69 @@ class ConsciousnessBlock:
             reason = data.get("reason") or data.get("cause") or data.get("why")
             if isinstance(reason, str):
                 self.last_death_reason = reason
+
+    def evolve_after_tick(self) -> None:
+        self.behavior_rules.mutate_from_experience(
+            died_recently=bool(self._died_last_tick),
+            took_damage=bool(self._took_damage_recently),
+            healed=bool(self._healed_recently),
+            survival_score_snapshot=float(_clamp(self.survival_score, 0.0, 1.0)),
+        )
+        self._took_damage_recently = False
+        self._healed_recently = False
+        self._died_last_tick = False
+
+    def on_pain(
+        self,
+        source_id: Optional[str] = None,
+        amount: float = 0.0,
+        pos: Optional[Tuple[float, float]] = None,
+        tick: Optional[int] = None,
+    ) -> None:
+        dmg = max(0.0, _safe_float(amount, 0.0))
+        self.fear_level = _clamp(self.fear_level + min(0.35, dmg / 120.0), 0.0, 1.0)
+        data: Dict[str, Any] = {"amount": dmg}
+        if source_id:
+            data["source"] = source_id
+        if pos is not None:
+            data["pos"] = _round_tuple_xy(pos)
+        ev_tick = int(self.age_ticks if tick is None else tick)
+        self.record_event(ev_tick, "pain", data)
+
+    def on_threat(
+        self,
+        kind: str = "threat",
+        attacker_id: Optional[str] = None,
+        species: Optional[str] = None,
+        damage: float = 0.0,
+        pos: Optional[Tuple[float, float]] = None,
+        tick: Optional[int] = None,
+    ) -> None:
+        self.fear_level = _clamp(self.fear_level + 0.08, 0.0, 1.0)
+        data: Dict[str, Any] = {
+            "kind": kind,
+            "damage": max(0.0, _safe_float(damage, 0.0)),
+        }
+        if attacker_id:
+            data["attacker"] = attacker_id
+        if species:
+            data["species"] = species
+        if pos is not None:
+            data["pos"] = _round_tuple_xy(pos)
+        ev_tick = int(self.age_ticks if tick is None else tick)
+        self.record_event(ev_tick, "animal_attack" if kind == "animal" else "threat", data)
+
+    def on_step(self, state: Dict[str, Any], reward: float) -> None:
+        tick_raw = state.get("tick", self.age_ticks)
+        try:
+            tick = int(self.age_ticks if tick_raw is None else tick_raw)
+        except Exception:
+            tick = int(self.age_ticks)
+        self.add_memory({
+            "type": "step",
+            "tick": tick,
+            "data": {"reward": float(_safe_float(reward, 0.0)), **dict(state or {})},
+        })
 
     # --------------------------------------------------------------------
     # Beliefs API (для UI-шимов)

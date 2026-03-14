@@ -1,0 +1,80 @@
+{
+  "_schema_version": 3,
+  "_lineage": {
+    "lineage_id": "brain_real",
+    "generation": 0,
+    "deaths": 0,
+    "total_age_ticks": 0,
+    "best_survival_score": 1.0,
+    "last_death_reason": null
+  },
+  "_runtime": {
+    "alive_now": true,
+    "current_drive": "idle",
+    "fear_level": 0.0,
+    "health": 100.0,
+    "energy": 100.0,
+    "hunger": 0.0,
+    "survival_score": 1.0,
+    "age_ticks": 0,
+    "ally_anchor": null,
+    "last_death_reason": null,
+    "last_thought": "…",
+    "curiosity_charge": 0.5,
+    "trauma_spots_known": 0,
+    "skills_version": "0",
+    "skills_steps": 0,
+    "skills_goals": 0
+  },
+  "_snapshots": [
+    {
+      "ts": "2026-03-13T15:11:43Z",
+      "alive_now": true,
+      "age_ticks": 0,
+      "survival_score": 1.0,
+      "fear_level": 0.0,
+      "health": 100.0,
+      "energy": 100.0,
+      "hunger": 0.0,
+      "current_drive": "idle",
+      "last_death_reason": null
+    }
+  ],
+  "brain": {
+    "agent_id": "brain_real",
+    "memory_tail": [],
+    "beliefs": [],
+    "behavior_rules": {
+      "avoid_hazard_radius": 6.0,
+      "healing_zone_seek_priority": 0.5,
+      "stick_with_ally_if_fear_above": 0.7,
+      "exploration_bias": 0.2
+    },
+    "fear_level": 0.0,
+    "health": 100.0,
+    "energy": 100.0,
+    "hunger": 0.0,
+    "alive": true,
+    "age_ticks": 0,
+    "survival_score": 1.0,
+    "current_drive": "idle",
+    "ally_anchor": null,
+    "last_death_reason": null,
+    "trauma_map": [],
+    "curiosity_charge": 0.5,
+    "last_thought": "…"
+  },
+  "last_saved": "2026-03-13T15:11:43Z",
+  "_export_meta": {
+    "agent_id": "agent_alias",
+    "skills": {
+      "tame_success_events": 0,
+      "tame_progress_events": 0,
+      "tame_peer_share_events": 0,
+      "seek_partner_events": 0,
+      "offspring_born_events": 0,
+      "lineage_inherit_events": 0
+    },
+    "version": "csen-1"
+  }
+}
