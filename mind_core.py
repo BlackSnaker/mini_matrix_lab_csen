@@ -265,6 +265,34 @@ class ConsciousnessBlock:
     curiosity_charge: float = 0.5   # 0..1
     last_thought: str = "…"
 
+    # --- Ollama brain integration --------------------------------------
+    ollama_enabled: bool = False
+    ollama_auto_mode: bool = False
+    ollama_interval_ticks: int = 180
+    ollama_model: Optional[str] = None
+    ollama_host: Optional[str] = None
+    ollama_status: str = "off"
+    ollama_last_error: Optional[str] = None
+    ollama_last_model: Optional[str] = None
+    ollama_last_thought: str = ""
+    ollama_active_lesson: str = ""
+    ollama_active_goal: Optional[Tuple[float, float]] = None
+    ollama_goal_started_tick: Optional[int] = None
+    ollama_active_reward_hint: float = 0.12
+    ollama_pending_instruction: Optional[str] = None
+    ollama_last_operator_instruction: Optional[str] = None
+    ollama_force_request: bool = False
+    ollama_request_inflight: bool = False
+    ollama_last_request_tick: int = -10**9
+    ollama_last_response_tick: int = -10**9
+    ollama_dialogue_tail: List[Dict[str, Any]] = field(default_factory=list)
+    ollama_log_seq: int = 0
+    ollama_command_examples: List[Dict[str, Any]] = field(default_factory=list)
+    ollama_command_example_seq: int = 0
+    ollama_authoritative_commands: bool = True
+    ollama_operator_override_until_tick: int = -10**9
+    ollama_active_command_source: Optional[str] = None
+
     # --- временные флаги / контекст последнего тика ---------------------
     _took_damage_recently: bool = False
     _healed_recently: bool = False
@@ -362,6 +390,36 @@ class ConsciousnessBlock:
 
             "curiosity_charge": float(_clamp(self.curiosity_charge, 0.0, 1.0)),
             "last_thought": self.last_thought,
+            "ollama": {
+                "enabled": bool(self.ollama_enabled),
+                "auto_mode": bool(self.ollama_auto_mode),
+                "interval_ticks": int(max(1, self.ollama_interval_ticks)),
+                "model": self.ollama_model,
+                "host": self.ollama_host,
+                "status": str(self.ollama_status or "off"),
+                "last_error": self.ollama_last_error,
+                "last_model": self.ollama_last_model,
+                "last_thought": str(self.ollama_last_thought or ""),
+                "active_lesson": str(self.ollama_active_lesson or ""),
+                "active_goal": (
+                    {"x": float(self.ollama_active_goal[0]), "y": float(self.ollama_active_goal[1])}
+                    if isinstance(self.ollama_active_goal, tuple) and len(self.ollama_active_goal) == 2
+                    else None
+                ),
+                "goal_started_tick": self.ollama_goal_started_tick,
+                "active_reward_hint": float(self.ollama_active_reward_hint),
+                "pending_instruction": self.ollama_pending_instruction,
+                "last_operator_instruction": self.ollama_last_operator_instruction,
+                "last_request_tick": int(self.ollama_last_request_tick),
+                "last_response_tick": int(self.ollama_last_response_tick),
+                "dialogue_tail": list(self.ollama_dialogue_tail[-80:]),
+                "log_seq": int(self.ollama_log_seq),
+                "command_examples": list(self.ollama_command_examples[-80:]),
+                "command_example_seq": int(self.ollama_command_example_seq),
+                "authoritative_commands": bool(self.ollama_authoritative_commands),
+                "operator_override_until_tick": int(self.ollama_operator_override_until_tick),
+                "active_command_source": self.ollama_active_command_source,
+            },
         }
 
         if self.gc_version != "0" and self.gc_actor and self.gc_critic:
@@ -448,6 +506,48 @@ class ConsciousnessBlock:
             curiosity_charge=_clamp(_safe_float(data.get("curiosity_charge", 0.5), 0.5), 0.0, 1.0),
             last_thought=str(data.get("last_thought", "…")),
         )
+
+        ollama_raw = data.get("ollama", {}) or {}
+        if isinstance(ollama_raw, dict):
+            goal_raw = ollama_raw.get("active_goal")
+            goal_val = None
+            if isinstance(goal_raw, dict) and ("x" in goal_raw) and ("y" in goal_raw):
+                goal_val = (
+                    _safe_float(goal_raw.get("x"), 0.0),
+                    _safe_float(goal_raw.get("y"), 0.0),
+                )
+            block.ollama_enabled = bool(ollama_raw.get("enabled", False))
+            block.ollama_auto_mode = bool(ollama_raw.get("auto_mode", False))
+            block.ollama_interval_ticks = max(1, int(_safe_float(ollama_raw.get("interval_ticks", 180), 180.0)))
+            block.ollama_model = ollama_raw.get("model")
+            block.ollama_host = ollama_raw.get("host")
+            block.ollama_status = str(ollama_raw.get("status", "off"))
+            block.ollama_last_error = ollama_raw.get("last_error")
+            block.ollama_last_model = ollama_raw.get("last_model")
+            block.ollama_last_thought = str(ollama_raw.get("last_thought", ""))
+            block.ollama_active_lesson = str(ollama_raw.get("active_lesson", ""))
+            block.ollama_active_goal = goal_val
+            gst = ollama_raw.get("goal_started_tick")
+            block.ollama_goal_started_tick = int(gst) if isinstance(gst, (int, float)) else None
+            block.ollama_active_reward_hint = _clamp(_safe_float(ollama_raw.get("active_reward_hint", 0.12), 0.12), -1.0, 1.0)
+            block.ollama_pending_instruction = ollama_raw.get("pending_instruction")
+            block.ollama_last_operator_instruction = ollama_raw.get("last_operator_instruction")
+            block.ollama_force_request = False
+            block.ollama_request_inflight = False
+            block.ollama_last_request_tick = int(_safe_float(ollama_raw.get("last_request_tick", -10**9), -10**9))
+            block.ollama_last_response_tick = int(_safe_float(ollama_raw.get("last_response_tick", -10**9), -10**9))
+            dialog = ollama_raw.get("dialogue_tail", []) or []
+            if isinstance(dialog, list):
+                block.ollama_dialogue_tail = [dict(row) for row in dialog if isinstance(row, dict)][-80:]
+            block.ollama_log_seq = int(_safe_float(ollama_raw.get("log_seq", len(block.ollama_dialogue_tail)), len(block.ollama_dialogue_tail)))
+            examples = ollama_raw.get("command_examples", []) or []
+            if isinstance(examples, list):
+                block.ollama_command_examples = [dict(row) for row in examples if isinstance(row, dict)][-80:]
+            block.ollama_command_example_seq = int(_safe_float(ollama_raw.get("command_example_seq", len(block.ollama_command_examples)), len(block.ollama_command_examples)))
+            block.ollama_authoritative_commands = bool(ollama_raw.get("authoritative_commands", True))
+            block.ollama_operator_override_until_tick = int(_safe_float(ollama_raw.get("operator_override_until_tick", -10**9), -10**9))
+            src = ollama_raw.get("active_command_source")
+            block.ollama_active_command_source = str(src).strip() if src is not None and str(src).strip() else None
 
         gc_raw = data.get("gc_policy")
         if gc_raw:
@@ -894,6 +994,11 @@ class ConsciousnessBlock:
         if not self.alive:
             self.last_thought = "..."
             return
+        if self.ollama_last_thought:
+            recent_window = max(8, int(max(1, self.ollama_interval_ticks)) // 3)
+            if (int(self.age_ticks) - int(self.ollama_last_response_tick)) <= recent_window:
+                self.last_thought = str(self.ollama_last_thought)
+                return
         drive = self.current_drive
         if drive == "heal":
             self.last_thought = "Мне больно. Мне нужно восстановиться."
@@ -911,6 +1016,157 @@ class ConsciousnessBlock:
             self.last_thought = "Я дышу. Я наблюдаю."
         else:
             self.last_thought = "…"
+
+    def _append_ollama_log(self, role: str, text: str, *, tick: Optional[int] = None) -> None:
+        line = str(text or "").strip()
+        if not line:
+            return
+        try:
+            tick_val = int(self.age_ticks if tick is None else tick)
+        except Exception:
+            tick_val = int(self.age_ticks)
+        self.ollama_log_seq = int(self.ollama_log_seq) + 1
+        self.ollama_dialogue_tail.append({
+            "seq": int(self.ollama_log_seq),
+            "tick": tick_val,
+            "role": str(role or "log"),
+            "text": line,
+        })
+        if len(self.ollama_dialogue_tail) > 120:
+            self.ollama_dialogue_tail = self.ollama_dialogue_tail[-120:]
+
+    def append_ollama_command_example(self, row: Dict[str, Any], *, tick: Optional[int] = None) -> None:
+        if not isinstance(row, dict):
+            return
+        command = str(row.get("command") or "").strip()
+        parsed = str(row.get("parsed") or "").strip()
+        if not command or not parsed:
+            return
+        try:
+            tick_val = int(self.age_ticks if tick is None else tick)
+        except Exception:
+            tick_val = int(self.age_ticks)
+        payload = dict(row)
+        payload["command"] = command[:160]
+        payload["parsed"] = parsed[:200]
+        payload["tick"] = tick_val
+        self.ollama_command_example_seq = int(self.ollama_command_example_seq) + 1
+        payload["seq"] = int(self.ollama_command_example_seq)
+        dedup_key = (
+            payload["command"],
+            payload["parsed"],
+            str(payload.get("outcome") or "")[:160],
+            bool(payload.get("success")),
+        )
+        kept: List[Dict[str, Any]] = []
+        for existing in list(self.ollama_command_examples or []):
+            if not isinstance(existing, dict):
+                continue
+            existing_key = (
+                str(existing.get("command") or ""),
+                str(existing.get("parsed") or ""),
+                str(existing.get("outcome") or "")[:160],
+                bool(existing.get("success")),
+            )
+            if existing_key == dedup_key:
+                continue
+            kept.append(dict(existing))
+        kept.append(payload)
+        self.ollama_command_examples = kept[-80:]
+
+    def configure_ollama(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        auto_mode: Optional[bool] = None,
+        model: Optional[str] = None,
+        host: Optional[str] = None,
+        interval_ticks: Optional[int] = None,
+        tick: Optional[int] = None,
+    ) -> None:
+        if enabled is not None:
+            self.ollama_enabled = bool(enabled)
+        if auto_mode is not None:
+            self.ollama_auto_mode = bool(auto_mode)
+        if model is not None:
+            self.ollama_model = str(model).strip() or None
+        if host is not None:
+            self.ollama_host = str(host).strip() or None
+        if interval_ticks is not None:
+            self.ollama_interval_ticks = max(1, int(interval_ticks))
+        self.ollama_status = "ready" if self.ollama_enabled else "off"
+        self._append_ollama_log(
+            "system",
+            "Ollama integrated into brain" if self.ollama_enabled else "Ollama integration disabled",
+            tick=tick,
+        )
+
+    def queue_ollama_instruction(self, text: str, *, tick: Optional[int] = None) -> None:
+        line = str(text or "").strip()
+        if not line:
+            return
+        self.ollama_enabled = True
+        self.ollama_pending_instruction = line
+        self.ollama_last_operator_instruction = line
+        self.ollama_force_request = True
+        self.ollama_status = "queued"
+        self.mark_ollama_operator_override(tick=tick, hold_ticks=max(180, int(self.ollama_interval_ticks) * 2))
+        self._append_ollama_log("you", line, tick=tick)
+
+    def clear_ollama_goal(self) -> None:
+        self.ollama_active_goal = None
+        self.ollama_goal_started_tick = None
+        self.ollama_active_lesson = ""
+        self.ollama_active_reward_hint = 0.12
+        self.ollama_active_command_source = None
+
+    def mark_ollama_operator_override(self, *, tick: Optional[int] = None, hold_ticks: int = 240) -> None:
+        base_tick = int(self.age_ticks if tick is None else tick)
+        self.ollama_operator_override_until_tick = max(
+            int(self.ollama_operator_override_until_tick),
+            int(base_tick) + max(1, int(hold_ticks)),
+        )
+
+    def clear_ollama_operator_override(self) -> None:
+        self.ollama_operator_override_until_tick = -10**9
+
+    def is_ollama_operator_override_active(self, *, tick: Optional[int] = None) -> bool:
+        now = int(self.age_ticks if tick is None else tick)
+        return bool(self.ollama_authoritative_commands) and int(now) <= int(self.ollama_operator_override_until_tick)
+
+    def export_ollama_state_for_ui(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.ollama_enabled),
+            "auto_mode": bool(self.ollama_auto_mode),
+            "interval_ticks": int(max(1, self.ollama_interval_ticks)),
+            "model": self.ollama_model,
+            "host": self.ollama_host,
+            "status": str(self.ollama_status or "off"),
+            "last_error": self.ollama_last_error,
+            "last_model": self.ollama_last_model,
+            "last_thought": str(self.ollama_last_thought or ""),
+            "active_lesson": str(self.ollama_active_lesson or ""),
+            "active_goal": (
+                {"x": float(self.ollama_active_goal[0]), "y": float(self.ollama_active_goal[1])}
+                if isinstance(self.ollama_active_goal, tuple) and len(self.ollama_active_goal) == 2
+                else None
+            ),
+            "goal_started_tick": self.ollama_goal_started_tick,
+            "active_reward_hint": float(self.ollama_active_reward_hint),
+            "pending_instruction": self.ollama_pending_instruction,
+            "last_operator_instruction": self.ollama_last_operator_instruction,
+            "force_request": bool(self.ollama_force_request),
+            "request_inflight": bool(self.ollama_request_inflight),
+            "last_request_tick": int(self.ollama_last_request_tick),
+            "last_response_tick": int(self.ollama_last_response_tick),
+            "authoritative_commands": bool(self.ollama_authoritative_commands),
+            "operator_override_until_tick": int(self.ollama_operator_override_until_tick),
+            "active_command_source": self.ollama_active_command_source,
+            "dialogue_tail": list(self.ollama_dialogue_tail[-60:]),
+            "log_seq": int(self.ollama_log_seq),
+            "command_examples": list(self.ollama_command_examples[-24:]),
+            "command_example_seq": int(self.ollama_command_example_seq),
+        }
 
     # --------------------------------------------------------------------
     # Интеграция с AgentMemory.summarize_recent()
@@ -1162,6 +1418,7 @@ class ConsciousnessBlock:
                 "stick_with_ally_if_fear_above": float(self.behavior_rules.stick_with_ally_if_fear_above),
                 "exploration_bias": float(_clamp(self.behavior_rules.exploration_bias, 0.0, 1.0)),
             },
+            "ollama": self.export_ollama_state_for_ui(),
             "beliefs": [{"if": b.condition, "then": b.conclusion,
                          "strength": round(_clamp(b.strength, 0.0, 1.0), 2)} for b in self.beliefs[-20:]],
             "memory_tail": [{"tick": getattr(ev, "tick", None),

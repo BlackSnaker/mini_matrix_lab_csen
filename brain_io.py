@@ -12,6 +12,7 @@ from mind_core import ConsciousnessBlock
 # =============================================================================
 
 _BRAINS_DIR = "brains"
+_ROOM_BRAINS_DIR = "room_brains"
 
 # v3 (текущий):
 #   {
@@ -62,6 +63,15 @@ def _brain_path(agent_lineage_id: str) -> str:
     _ensure_dir()
     safe_id = _sanitize_lineage_id(agent_lineage_id)
     return os.path.join(_BRAINS_DIR, f"{safe_id}.json")
+
+
+def _brain_path_in_dir(out_dir: str, export_id: str) -> str:
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        print(f"{_LOG_PREFIX} WARN: can't ensure dir {out_dir}: {e}")
+    safe_id = _sanitize_lineage_id(export_id)
+    return os.path.join(out_dir, f"{safe_id}.json")
 
 
 def _read_json_file(path: str) -> Optional[Dict[str, Any]]:
@@ -183,6 +193,11 @@ def _extract_runtime_meta(block: ConsciousnessBlock) -> Dict[str, Any]:
         "skills_version": skills_version,
         "skills_steps": skills_steps,
         "skills_goals": skills_goals,
+        "ollama_enabled": bool(getattr(block, "ollama_enabled", False)),
+        "ollama_auto_mode": bool(getattr(block, "ollama_auto_mode", False)),
+        "ollama_status": _safe_str(getattr(block, "ollama_status", None)),
+        "ollama_model": _safe_str(getattr(block, "ollama_last_model", None) or getattr(block, "ollama_model", None)),
+        "ollama_dialogue_entries": len(getattr(block, "ollama_dialogue_tail", []) or []),
     }
 
 
@@ -357,7 +372,12 @@ def load_brain_with_meta(agent_lineage_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def save_brain(block: ConsciousnessBlock) -> None:
+def _save_brain_to_path(
+    block: ConsciousnessBlock,
+    path: str,
+    *,
+    export_meta: Optional[Dict[str, Any]] = None,
+) -> None:
     """
     Сохранить состояние сознания/поведения на диск в формате v3.
 
@@ -369,7 +389,6 @@ def save_brain(block: ConsciousnessBlock) -> None:
       5) атомарно пишем payload.
     """
     lineage_id = getattr(block, "agent_id", "unknown")
-    path = _brain_path(lineage_id)
 
     prev_raw = _read_json_file(path)
     if prev_raw is None:
@@ -413,8 +432,34 @@ def save_brain(block: ConsciousnessBlock) -> None:
         "last_saved": _now_utc_iso(),
     }
 
-    export_meta = getattr(block, "trainer_side_meta", None)
+    payload_export_meta: Dict[str, Any] = {}
+    block_export_meta = getattr(block, "trainer_side_meta", None)
+    if isinstance(block_export_meta, dict) and block_export_meta:
+        payload_export_meta.update(dict(block_export_meta))
     if isinstance(export_meta, dict) and export_meta:
-        payload["_export_meta"] = dict(export_meta)
+        payload_export_meta.update(dict(export_meta))
+    if payload_export_meta:
+        payload["_export_meta"] = payload_export_meta
 
     _write_json_file_atomic(path, payload)
+
+
+def save_brain(block: ConsciousnessBlock) -> None:
+    lineage_id = getattr(block, "agent_id", "unknown")
+    path = _brain_path(lineage_id)
+    export_meta = getattr(block, "trainer_side_meta", None)
+    export_meta = dict(export_meta) if isinstance(export_meta, dict) and export_meta else None
+    _save_brain_to_path(block, path, export_meta=export_meta)
+
+
+def export_room_brain(
+    block: ConsciousnessBlock,
+    *,
+    export_id: Optional[str] = None,
+    export_meta: Optional[Dict[str, Any]] = None,
+    out_dir: str = _ROOM_BRAINS_DIR,
+) -> str:
+    lineage_id = str(export_id or getattr(block, "agent_id", "unknown"))
+    path = _brain_path_in_dir(out_dir, lineage_id)
+    _save_brain_to_path(block, path, export_meta=export_meta)
+    return path

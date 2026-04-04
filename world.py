@@ -824,6 +824,16 @@ class World:
             return True
 
     def tick(self):
+        brain_bridge = getattr(self, "ollama_brain_bridge", None)
+        if brain_bridge is not None and hasattr(brain_bridge, "before_world_tick"):
+            try:
+                brain_bridge.before_world_tick(self)
+            except Exception as e:
+                self.add_event({
+                    "type": "ollama_brain_before_tick_error",
+                    "err": str(e),
+                })
+
         # Починим контейнер животных перед тиками
         self._normalize_animals_container()
 
@@ -887,6 +897,14 @@ class World:
 
         # 3) глобальный тик
         self.tick_count += 1
+        if brain_bridge is not None and hasattr(brain_bridge, "after_world_tick"):
+            try:
+                brain_bridge.after_world_tick(self)
+            except Exception as e:
+                self.add_event({
+                    "type": "ollama_brain_after_tick_error",
+                    "err": str(e),
+                })
 
     # -----------------------------------------------------------------
     # снапшоты (старый + новый sync для 3D)

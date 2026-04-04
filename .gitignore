@@ -68,6 +68,7 @@ site/
 # VS Code
 .vscode/
 *.code-workspace
+.codex
 
 # PyCharm / IntelliJ
 .idea/

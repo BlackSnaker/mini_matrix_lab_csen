@@ -56,6 +56,8 @@ from brain_io import save_brain
 from animals import Animal as AnimalSim, AnimalSpecies
 from brain_visualizer import OrganicBrainView
 from learning_insights import AgentLearningSnapshot, capture_learning_snapshot, diff_learning
+from ollama_brain_service import OllamaBrainService
+from training_room import TrainingRoomManager
 
 
 # =============================================================================
@@ -479,6 +481,8 @@ class MindTrainerInteractive(QtCore.QObject):
         self.learning_journal: Dict[str, List[Dict[str, Any]]] = {}
         self.latest_learning: Dict[str, Dict[str, Any]] = {}
         self._learning_prev: Dict[str, AgentLearningSnapshot] = {}
+        self.training_room = TrainingRoomManager()
+        self.ollama_brain_service = OllamaBrainService(auto_interval_ticks=180)
 
         self._spawn_new_epoch()
 
@@ -495,6 +499,9 @@ class MindTrainerInteractive(QtCore.QObject):
             fresh_start=self.fresh_start,
             agent_lineup=self.agent_lineup,
         )
+        if self.world is not None:
+            self.training_room.attach_world(self.world, announce=(self.current_epoch > 0))
+            self.ollama_brain_service.attach_world(self.world, training_room=self.training_room)
         self.ticks_in_epoch = 0
         self._last_disaster_tick = None
 
@@ -512,6 +519,16 @@ class MindTrainerInteractive(QtCore.QObject):
 
         self.agent_list_changed.emit()
         self.epoch_changed.emit()
+
+    def assign_agent_to_training_room(self, agent_id: Optional[str] = None, *, announce: bool = True) -> Optional[str]:
+        if self.world is None:
+            return None
+        return self.training_room.assign_agent(self.world, agent_id, announce=announce)
+
+    def release_training_room_agent(self, *, announce: bool = True) -> Optional[str]:
+        if self.world is None:
+            return None
+        return self.training_room.release_agent(self.world, announce=announce)
 
     def _inject_disaster(self, t: int):
         if not self.world:
@@ -717,9 +734,12 @@ class MindTrainerInteractive(QtCore.QObject):
         if not self.world:
             return
         t = self.ticks_in_epoch
+        self.training_room.maintain_world(self.world)
         self._maybe_inject_disaster(t)
         self._maybe_inject_relief(t)
+        self.training_room.maintain_world(self.world)
         self.world.tick()
+        self.training_room.maintain_world(self.world)
         self._collect_learning_signals(t)
         self.ticks_in_epoch += 1
         self.monitor.tick = self.ticks_in_epoch

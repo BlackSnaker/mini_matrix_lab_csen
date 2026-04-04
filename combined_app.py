@@ -33,6 +33,7 @@ from world import WorldObject
 
 # --- Mind Trainer панели
 from mind_trainer_gui import MindTrainerInteractive, TrainerStatsWidget, AgentBrainWidget
+from training_room import LAB_AGENT_TAG, TRAINING_ROOM_TAG
 
 
 # =========================
@@ -152,6 +153,14 @@ def _iter_vals(maybe_collection):
     if isinstance(maybe_collection, Sequence) and not isinstance(maybe_collection, (str, bytes, bytearray)):
         return list(maybe_collection)
     return [maybe_collection]
+
+
+def _public_tags(entity: Any) -> List[str]:
+    state = getattr(entity, "public_state", {}) or {}
+    tags = state.get("tags", [])
+    if not isinstance(tags, list):
+        return []
+    return [str(t) for t in tags]
 
 
 _CONTROL_TEXT_KEY_ALIASES: Dict[str, int] = {
@@ -313,6 +322,7 @@ class MiniMapWidget(QtWidgets.QWidget):
         self._pen_grid = QtGui.QPen(QtGui.QColor(255,255,255,20), 1)
         self._pen_border = QtGui.QPen(QtGui.QColor("#2a2f3a"), 1)
         self._brush_agent = QtGui.QBrush(QtGui.QColor(122,162,255,220))
+        self._brush_lab = QtGui.QBrush(QtGui.QColor(88, 235, 176, 232))
         self._brush_sel = QtGui.QBrush(QtGui.QColor(255,255,255,240))
         self._brush_animal = QtGui.QBrush(QtGui.QColor(255,191,105,220))
         self._brush_player = QtGui.QBrush(QtGui.QColor(86, 236, 182, 232))
@@ -352,7 +362,14 @@ class MiniMapWidget(QtWidgets.QWidget):
                 x = getattr(ent.transform.pos, "x", 0.0)
                 z = getattr(ent.transform.pos, "z", 0.0)
                 px, py = map_xy(x, z)
-                p.setBrush(self._brush_sel if aid == sel else self._brush_agent)
+                tags = set(_public_tags(ent))
+                if aid == sel:
+                    brush = self._brush_sel
+                elif LAB_AGENT_TAG in tags:
+                    brush = self._brush_lab
+                else:
+                    brush = self._brush_agent
+                p.setBrush(brush)
                 p.setPen(QtCore.Qt.PenStyle.NoPen)
                 p.drawEllipse(QtCore.QPointF(px, py), 4.5 if aid==sel else 3.0, 4.5 if aid==sel else 3.0)
         except Exception:
@@ -515,7 +532,11 @@ class WorldMapOverlay(QtWidgets.QWidget):
 
         for zone in list(getattr(getattr(self.shared.engine, "world", None), "zones", []) or []):
             kind = str(getattr(zone, "kind", "") or "")
-            if kind == "safe":
+            obj_id = str(getattr(zone, "obj_id", "") or "")
+            if "training_room" in obj_id:
+                fill = QtGui.QColor(92, 18, 18, 78)
+                stroke = QtGui.QColor(138, 248, 196, 168)
+            elif kind == "safe":
                 fill = QtGui.QColor(74, 210, 184, 58)
                 stroke = QtGui.QColor(108, 245, 210, 132)
             elif kind == "hazard":
@@ -535,8 +556,15 @@ class WorldMapOverlay(QtWidgets.QWidget):
         for aid, ent in list(getattr(self.shared.engine, "agents", {}).items()):
             center = self._world_to_screen(map_rect, float(getattr(ent.transform.pos, "x", 0.0)), float(getattr(ent.transform.pos, "z", 0.0)))
             sel = aid == selected_id
+            tags = set(_public_tags(ent))
             p.setPen(QtCore.Qt.PenStyle.NoPen)
-            p.setBrush(QtGui.QColor(244, 248, 255, 244) if sel else QtGui.QColor(122, 162, 255, 224))
+            if sel:
+                brush = QtGui.QColor(244, 248, 255, 244)
+            elif LAB_AGENT_TAG in tags:
+                brush = QtGui.QColor(88, 235, 176, 234)
+            else:
+                brush = QtGui.QColor(122, 162, 255, 224)
+            p.setBrush(brush)
             r = 6.6 if sel else 4.2
             p.drawEllipse(center, r, r)
             if sel:
@@ -570,7 +598,7 @@ class WorldMapOverlay(QtWidgets.QWidget):
 
         footer = QtCore.QRectF(outer.left() + 20, outer.bottom() - 28, outer.width() - 40, 18)
         p.setPen(QtGui.QColor(162, 180, 201))
-        p.drawText(footer, Qt.AlignLeft | Qt.AlignVCenter, "Белые точки — выбранные агенты, зелёный маркер — игрок, оранжевые — животные")
+        p.drawText(footer, Qt.AlignLeft | Qt.AlignVCenter, "Белые точки — выбранные, зелёно-мятные — лабораторный агент, зелёный маркер — игрок, оранжевые — животные")
 
     def mousePressEvent(self, e: QtGui.QMouseEvent):
         if e.button() not in (Qt.LeftButton, Qt.RightButton):
@@ -696,6 +724,7 @@ class SharedState(QtCore.QObject):
         return {
             "id": aid,
             "name": st.get("name", aid),
+            "tags": list(st.get("tags", []) or []),
             "pos": {"x": _f(pos, "x"), "y": _f(pos, "y")},
             "goal": {"x": _f(goal, "x"), "y": _f(goal, "y")},
             "vel": {"x": _f(vel, "x"), "y": _f(vel, "y")},
@@ -1733,10 +1762,13 @@ class AgentHud(QtWidgets.QFrame):
     def refresh(self):
         info = self.shared.get_selected_agent_debug()
         name = info.get("name") or info.get("id") or "—"
-        self.title.setText(str(name))
+        tags = set(str(t) for t in list(info.get("tags", []) or []))
+        suffix = " [LAB]" if LAB_AGENT_TAG in tags else ""
+        self.title.setText(f"{name}{suffix}")
         drive = info.get("mind_drive") or "—"
         score = info.get("mind_survival_score")
-        self.drive.setText(f"Drive: {drive}   |   Survival: {score if score is not None else '—'}")
+        room_state = " | Room: confined" if TRAINING_ROOM_TAG in tags else ""
+        self.drive.setText(f"Drive: {drive}   |   Survival: {score if score is not None else '—'}{room_state}")
         self.pb_health.setValue(int(info.get("health") or 0))
         self.pb_energy.setValue(int(info.get("energy") or 0))
         fear = info.get("fear") or 0.0
@@ -1885,6 +1917,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self._frame3d: Optional[QtWidgets.QFrame] = None
         self._frame3d_layout: Optional[QtWidgets.QVBoxLayout] = None
         self._overlay_relayout_pending = False
+        self._trainer_tick_error: Optional[str] = None
 
         # Глобальный шрифт
         font = QtGui.QFont(APP_FONT, 10)
@@ -2048,6 +2081,13 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         # 8) мост мира в 3D
         self.bridge = TrainerToEngineBridge(self.trainer, self.shared, self)
 
+        # 8.1) Основной тик симуляции мира и мозга агента.
+        self._trainer_timer = QtCore.QTimer(self)
+        self._trainer_timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self._trainer_timer.setInterval(16)
+        self._trainer_timer.timeout.connect(self._on_trainer_tick)
+        self._trainer_timer.start()
+
         # 9) Toolbar & actions
         self._make_toolbar()
 
@@ -2058,6 +2098,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
         # 11) начальный пуш снапшота
         self.bridge._push_snapshot()
+        self._ensure_training_room_selection()
         self._schedule_overlay_relayout()
         self._on_first_person_changed(self.view3d.is_first_person_mode())
 
@@ -2278,6 +2319,10 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             return
         self._resize_world_if_needed(world, self._showcase_world_w, self._showcase_world_h)
         added = self._add_showcase_safe_havens(world)
+        training_room = getattr(self.trainer, "training_room", None)
+        if training_room is not None:
+            preferred_id = getattr(training_room, "agent_id", None)
+            training_room.attach_world(world, preferred_agent_id=preferred_id, announce=announce)
         if rebuild_environment:
             self._rebuild_environment_for_world(world)
         if announce and hasattr(world, "add_chat_line"):
@@ -2288,6 +2333,52 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+    def _training_room(self):
+        return getattr(self.trainer, "training_room", None)
+
+    def _training_room_agent_id(self) -> Optional[str]:
+        room = self._training_room()
+        aid = getattr(room, "agent_id", None) if room is not None else None
+        return str(aid) if aid else None
+
+    def _ensure_training_room_selection(self) -> None:
+        aid = self._training_room_agent_id()
+        if not aid:
+            return
+        current = self.shared.get_selected_agent_id()
+        if current and current in getattr(self.engine, "agents", {}):
+            return
+        self.shared.set_selected_agent(aid)
+
+    @Slot()
+    def _send_selected_agent_to_training_room(self):
+        room = self._training_room()
+        world = getattr(self.trainer, "world", None)
+        if room is None or world is None:
+            return
+        agent_id = self.shared.get_selected_agent_id() or self._training_room_agent_id()
+        agent_id = self.trainer.assign_agent_to_training_room(agent_id, announce=True)
+        if not agent_id:
+            self._toast("No agent available for training room")
+            return
+        self.shared.set_selected_agent(agent_id)
+        self.bridge._push_snapshot()
+        self._toast(f"{agent_id} moved to training room")
+
+    @Slot()
+    def _release_training_room_agent(self):
+        room = self._training_room()
+        world = getattr(self.trainer, "world", None)
+        if room is None or world is None:
+            return
+        agent_id = self.trainer.release_training_room_agent(announce=True)
+        if not agent_id:
+            self._toast("Training room is empty")
+            return
+        self.shared.set_selected_agent(agent_id)
+        self.bridge._push_snapshot()
+        self._toast(f"{agent_id} released into world")
+
     @Slot()
     def _on_trainer_epoch_changed(self):
         self._prepare_showcase_world(announce=True, rebuild_environment=True)
@@ -2296,6 +2387,25 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             self.combat.world = self.trainer.world
         if hasattr(self, "bridge"):
             self.bridge._push_snapshot()
+        self._ensure_training_room_selection()
+
+    @Slot()
+    def _on_trainer_tick(self):
+        trainer = getattr(self, "trainer", None)
+        if trainer is None:
+            return
+        try:
+            trainer.step_tick()
+            self._trainer_tick_error = None
+        except Exception as exc:
+            self._trainer_tick_error = str(exc)
+            if hasattr(self, "_trainer_timer") and self._trainer_timer.isActive():
+                self._trainer_timer.stop()
+            try:
+                self.statusBar().showMessage(f"Trainer tick error: {exc}", 5000)
+            except Exception:
+                pass
+            print(f"[combined_app] trainer tick failed: {exc}")
 
     # --- toolbar
     def _make_toolbar(self):
@@ -2348,6 +2458,18 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.addAction(act_spawn_wolves)
         tb.addAction(act_spawn_wolves)
 
+        act_room_assign = QtGui.QAction("To Room (Ctrl+Shift+T)", self)
+        act_room_assign.setShortcut("Ctrl+Shift+T")
+        act_room_assign.triggered.connect(self._send_selected_agent_to_training_room)
+        self.addAction(act_room_assign)
+        tb.addAction(act_room_assign)
+
+        act_room_release = QtGui.QAction("Release Room Agent (Ctrl+Shift+G)", self)
+        act_room_release.setShortcut("Ctrl+Shift+G")
+        act_room_release.triggered.connect(self._release_training_room_agent)
+        self.addAction(act_room_release)
+        tb.addAction(act_room_release)
+
         # Скриншот
         act_shot = QtGui.QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "Screenshot 3D (Ctrl+Shift+S)", self)
         act_shot.setShortcut("Ctrl+Shift+S")
@@ -2394,9 +2516,14 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
     # --- боевой тик
     def _on_combat_tick(self):
         if getattr(self, 'combat', None) and getattr(self.trainer, 'world', None):
+            room = self._training_room()
+            if room is not None:
+                room.maintain_world(self.trainer.world)
             try:
                 self.combat.step(0.05)
             finally:
+                if room is not None:
+                    room.maintain_world(self.trainer.world)
                 self.bridge._push_snapshot()
 
     # --- спавн волков возле выбранного агента (или центра)
@@ -2405,12 +2532,16 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         if not w or not getattr(self, 'combat', None):
             return
         sel = self.shared.get_selected_agent_id()
+        room = self._training_room()
         if sel and hasattr(w, "get_agent_by_id"):
             ag = w.get_agent_by_id(sel)
             cx = getattr(ag, "x", w.width * 0.5)
             cy = getattr(ag, "y", w.height * 0.5)
         else:
             cx, cy = w.width * 0.5, w.height * 0.5
+        if room is not None and room.is_confined(sel):
+            cx, cy = room.release_point(w)
+            self._toast("Training room is protected: wolves spawned outside the room")
         try:
             self.combat.spawn_wave("wolf", n=3, around=(cx, cy))
             if hasattr(w, "add_chat_line"):
@@ -2425,6 +2556,12 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         w = self.trainer.world
         if not w:
             return
+        room = self._training_room()
+        if room is not None:
+            clamped_x, clamped_z = room.clamp_point_for_agent(w, agent_id, x, z)
+            if abs(clamped_x - x) > 1e-6 or abs(clamped_z - z) > 1e-6:
+                self._toast("Goal clamped to training room")
+            x, z = clamped_x, clamped_z
         x = max(0.0, min(w.width, x))
         z = max(0.0, min(w.height, z))
         if hasattr(w, "set_agent_goal"):
@@ -2574,6 +2711,9 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
         nx = max(0.0, min(float(getattr(world, "width", x)), float(x)))
         nz = max(0.0, min(float(getattr(world, "height", z)), float(z)))
+        room = self._training_room()
+        if room is not None:
+            nx, nz = room.clamp_point_for_agent(world, agent_id, nx, nz)
         ok = False
         if hasattr(world, "drive_agent"):
             try:
@@ -2806,8 +2946,8 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
     def _help_text_for_current_mode(self) -> str:
         if self.view3d.is_first_person_mode():
-            return "FPS: при входе открывается карта мира • M/Ь — карта • F11 — игровой fullscreen • мышь — обзор • WASD/ЦФЫВ — вести выбранного агента • Shift — бег • Ctrl — точный шаг • Q/Й — курсор • E/У или LMB — выбрать цель • RMB/G/П — goal • F/А — к агенту • Tab — след. • V/М или Esc — выход"
-        return "ЛКМ — выбрать • ПКМ — приказать • Ctrl+ПКМ — меню • RMB — орбита • MMB — пан • колесо — зум • F11 — игровой fullscreen • V/М — first person • Tab — след. • F/А — фокус • R/К — сброс • Ctrl+W — волки"
+            return "FPS: при входе открывается карта мира • M/Ь — карта • F11 — игровой fullscreen • мышь — обзор • WASD/ЦФЫВ — вести выбранного агента • Shift — бег • Ctrl — точный шаг • Q/Й — курсор • E/У или LMB — выбрать цель • RMB/G/П — goal • Ctrl+Shift+T — в комнату • Ctrl+Shift+G — выпуск • F/А — к агенту • Tab — след. • V/М или Esc — выход"
+        return "ЛКМ — выбрать • ПКМ — приказать • Ctrl+ПКМ — меню • RMB — орбита • MMB — пан • колесо — зум • F11 — игровой fullscreen • V/М — first person • Tab — след. • F/А — фокус • R/К — сброс • Ctrl+W — волки • Ctrl+Shift+T — в комнату • Ctrl+Shift+G — выпуск"
 
     def _forward_key_event_to_view3d(self, e: QtGui.QKeyEvent, *, source=None) -> bool:
         if not hasattr(self, "view3d"):
@@ -2961,6 +3101,12 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("state", self.saveState())
         self.settings.setValue("splitter", self.splitter.sizes())
         self.settings.setValue("game_fullscreen", bool(self._game_fullscreen))
+        if hasattr(self, "_trainer_timer"):
+            self._trainer_timer.stop()
+        if hasattr(self, "_combat_timer"):
+            self._combat_timer.stop()
+        if hasattr(self, "_ui_timer"):
+            self._ui_timer.stop()
         super().closeEvent(e)
 
 
@@ -3138,6 +3284,7 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
             "age_ticks": int(getattr(ag, "age_ticks", 0)),
             "alive": bool(getattr(ag, "is_alive", lambda: True)()),
             "cause_of_death": getattr(ag, "cause_of_death", None),
+            "tags": list(getattr(ag, "tags", []) or []),
             "mind": _brain_to_dict(brain),
         })
 

@@ -643,7 +643,9 @@ class Agent:
         )
 
         try:
-            if not self._in_safe_zone(world) and getattr(attacker, "x", None) is not None:
+            if self._ollama_operator_override_active(world):
+                pass
+            elif not self._in_safe_zone(world) and getattr(attacker, "x", None) is not None:
                 ax, ay = float(getattr(attacker, "x", 0.0)), float(getattr(attacker, "y", 0.0))
                 bounds = _world_size(world)
                 if self._should_counterattack_after_hit():
@@ -771,6 +773,10 @@ class Agent:
             now = 0
         return int(now) <= int(self._manual_control_until_tick)
 
+    def clear_manual_control(self) -> None:
+        self._manual_control_until_tick = -10**9
+        self._manual_control_source = None
+
     def apply_manual_control(
         self,
         x: float,
@@ -838,6 +844,24 @@ class Agent:
                 )
             self._last_brain_error = err
 
+    def _ollama_operator_override_active(self, world: Any = None) -> bool:
+        brain = getattr(self, "brain", None)
+        if brain is None:
+            return False
+        tick = _world_time_int(world) if world is not None else None
+        checker = getattr(brain, "is_ollama_operator_override_active", None)
+        if callable(checker):
+            try:
+                return bool(checker(tick=tick))
+            except Exception:
+                pass
+        try:
+            until = int(getattr(brain, "ollama_operator_override_until_tick", -10**9))
+        except Exception:
+            return False
+        now = 0 if tick is None else int(tick)
+        return bool(getattr(brain, "ollama_authoritative_commands", True)) and now <= until
+
     def soft_needs_update(self, dt: float = 1.0, in_safe: bool = False) -> None:
         self.age_ticks += 1
         self.hunger = _clamp01(self.hunger + 0.002 * dt)
@@ -870,6 +894,7 @@ class Agent:
         """
         dt = _world_dt(world)
         old_x, old_y = self.x, self.y
+        operator_override = self._ollama_operator_override_active(world)
 
         if self.is_manual_control_active(world):
             self.goal_x = self.x
@@ -899,6 +924,12 @@ class Agent:
 
         # цель достигнута → выбираем новую
         if self.distance_to(self.goal_x, self.goal_y) <= self.arrive_eps or (self.goal_x == self.x and self.goal_y == self.y):
+            if operator_override:
+                self.goal_x = self.x
+                self.goal_y = self.y
+                self.vx = 0.0
+                self.vy = 0.0
+                return 0.0
             if self.last_attacker_id and getattr(world, "animals", None) and self.last_attacker_id in getattr(world, "animals", {}):
                 ani = world.animals[self.last_attacker_id]
                 ax, ay = float(getattr(ani, "x", self.x)), float(getattr(ani, "y", self.y))
@@ -1066,6 +1097,8 @@ class Agent:
 
     def _auto_defend_melee(self, world) -> None:
         if not self.is_alive():
+            return
+        if self._ollama_operator_override_active(world):
             return
         now = _world_time_int(world)
         target = self._select_threat(world)

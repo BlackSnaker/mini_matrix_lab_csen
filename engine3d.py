@@ -1575,6 +1575,175 @@ def _draw_wall(inst: StaticMeshInstance):
         )
 
 
+TRAINING_ROOM_ZONE_OBJECT_ID = "training_room_zone"
+
+
+def _is_training_room_zone(zone: ZoneObject) -> bool:
+    obj_id = str(getattr(zone, "obj_id", "") or "")
+    name = str(getattr(zone, "name", "") or "")
+    return obj_id == TRAINING_ROOM_ZONE_OBJECT_ID or "training_room" in obj_id or "Учебная_комната" in name
+
+
+def _draw_flat_rect(
+    cx: float,
+    cz: float,
+    hx: float,
+    hz: float,
+    *,
+    y: float,
+    yaw_rad: float,
+    color: Tuple[float, float, float],
+) -> None:
+    lit = _fake_lighting_color(color, 0.0, 1.0, 0.0)
+    glColor3f(*lit)
+    glBegin(GL_QUADS)
+    for lx, lz in ((-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz)):
+        wx, wz = _yaw_world_offset(cx, cz, yaw_rad, lx, lz)
+        glVertex3f(wx, y, wz)
+    glEnd()
+
+
+def _draw_checkerboard_rect(
+    cx: float,
+    cz: float,
+    hx: float,
+    hz: float,
+    *,
+    y: float,
+    yaw_rad: float,
+    cols: int,
+    rows: int,
+    color_a: Tuple[float, float, float],
+    color_b: Tuple[float, float, float],
+) -> None:
+    cols = max(1, int(cols))
+    rows = max(1, int(rows))
+    step_x = (hx * 2.0) / cols
+    step_z = (hz * 2.0) / rows
+    for ix in range(cols):
+        for iz in range(rows):
+            x0 = -hx + ix * step_x
+            x1 = x0 + step_x
+            z0 = -hz + iz * step_z
+            z1 = z0 + step_z
+            col = color_a if ((ix + iz) % 2 == 0) else color_b
+            lit = _fake_lighting_color(col, 0.0, 1.0, 0.0)
+            glColor3f(*lit)
+            glBegin(GL_QUADS)
+            for lx, lz in ((x0, z0), (x1, z0), (x1, z1), (x0, z1)):
+                wx, wz = _yaw_world_offset(cx, cz, yaw_rad, lx, lz)
+                glVertex3f(wx, y, wz)
+            glEnd()
+
+
+def _draw_construct_armchair(
+    cx: float,
+    cz: float,
+    *,
+    yaw_rad: float,
+    leather: Tuple[float, float, float],
+    trim: Tuple[float, float, float],
+) -> None:
+    leg_color = (0.10, 0.07, 0.05)
+    seat_y = 0.40
+    _draw_oriented_box(cx, seat_y, cz, 0.66, 0.16, 0.62, yaw_rad, leather)
+    back_x, back_z = _yaw_world_offset(cx, cz, yaw_rad, 0.0, -0.50)
+    _draw_oriented_box(back_x, 0.98, back_z, 0.68, 0.56, 0.16, yaw_rad, leather)
+    wing_lx = 0.60
+    wing_lz = -0.34
+    wx, wz = _yaw_world_offset(cx, cz, yaw_rad, -wing_lx, wing_lz)
+    _draw_oriented_box(wx, 0.92, wz, 0.12, 0.46, 0.36, yaw_rad, leather)
+    wx, wz = _yaw_world_offset(cx, cz, yaw_rad, wing_lx, wing_lz)
+    _draw_oriented_box(wx, 0.92, wz, 0.12, 0.46, 0.36, yaw_rad, leather)
+    ax_off = 0.72
+    arm_z = 0.02
+    wx, wz = _yaw_world_offset(cx, cz, yaw_rad, -ax_off, arm_z)
+    _draw_oriented_box(wx, 0.60, wz, 0.12, 0.20, 0.54, yaw_rad, trim)
+    wx, wz = _yaw_world_offset(cx, cz, yaw_rad, ax_off, arm_z)
+    _draw_oriented_box(wx, 0.60, wz, 0.12, 0.20, 0.54, yaw_rad, trim)
+    cushion_x, cushion_z = _yaw_world_offset(cx, cz, yaw_rad, 0.0, 0.06)
+    _draw_oriented_box(cushion_x, 0.49, cushion_z, 0.50, 0.08, 0.48, yaw_rad, _mix_rgb(leather, (0.78, 0.24, 0.18), 0.16))
+    for lx, lz in ((-0.48, -0.38), (0.48, -0.38), (-0.50, 0.38), (0.50, 0.38)):
+        wx, wz = _yaw_world_offset(cx, cz, yaw_rad, lx, lz)
+        _draw_oriented_box(wx, 0.16, wz, 0.06, 0.16, 0.06, yaw_rad, leg_color)
+
+
+def _draw_construct_table(cx: float, cz: float, *, global_time: float) -> None:
+    wood = (0.17, 0.11, 0.08)
+    brass = (0.48, 0.35, 0.18)
+    _draw_oriented_box(cx, 0.42, cz, 0.42, 0.05, 0.30, 0.0, wood)
+    _draw_oriented_box(cx, 0.22, cz, 0.09, 0.18, 0.09, 0.0, brass)
+    _draw_oriented_box(cx - 0.10, 0.50, cz - 0.02, 0.05, 0.03, 0.05, 0.0, (0.74, 0.12, 0.12))
+    _draw_oriented_box(cx + 0.10, 0.50, cz + 0.02, 0.05, 0.03, 0.05, 0.0, (0.14, 0.26, 0.78))
+    pulse = 0.5 + 0.5 * math.sin(global_time * 3.0)
+    _draw_ring(cx, cz, radius=0.72 + pulse * 0.08, y=0.035, rgb=(0.28, 0.95, 0.62), width=1.0, alpha=0.10 + pulse * 0.08)
+
+
+def _draw_construct_lamp(cx: float, cz: float, *, global_time: float) -> None:
+    pole = (0.24, 0.18, 0.12)
+    glow = (0.70, 0.96, 0.76)
+    _draw_oriented_box(cx, 0.14, cz, 0.24, 0.03, 0.24, 0.0, (0.20, 0.18, 0.16))
+    _draw_oriented_box(cx, 1.06, cz, 0.06, 0.92, 0.06, 0.0, pole)
+    _draw_oriented_box(cx, 1.92, cz, 0.28, 0.18, 0.28, 0.0, (0.86, 0.85, 0.72))
+    bulb_y = 1.78
+    _draw_sphere_lowpoly(cx, bulb_y, cz, radius=0.10, base_color=glow, lat_steps=5, lon_steps=8)
+    pulse = 0.5 + 0.5 * math.sin(global_time * 4.3 + cx * 0.2 + cz * 0.2)
+    _draw_ring(cx, cz, radius=1.10 + pulse * 0.16, y=0.03, rgb=(0.64, 1.0, 0.82), width=1.0, alpha=0.10 + pulse * 0.08)
+
+
+def _draw_matrix_construct_room(zone: ZoneObject, global_time: float) -> None:
+    cx = float(zone.x)
+    cz = float(zone.z)
+    room_half = max(7.0, float(zone.radius) * 1.18)
+    room_h = max(2.8, room_half * 0.34)
+
+    # Платформа и внутренний ковёр: оммаж на сцену с красными креслами.
+    _draw_flat_rect(cx, cz, room_half, room_half * 0.96, y=0.014, yaw_rad=0.0, color=(0.06, 0.07, 0.08))
+    _draw_flat_rect(cx, cz, room_half * 0.92, room_half * 0.88, y=0.020, yaw_rad=0.0, color=(0.11, 0.12, 0.10))
+    _draw_checkerboard_rect(
+        cx,
+        cz,
+        room_half * 0.70,
+        room_half * 0.50,
+        y=0.026,
+        yaw_rad=0.0,
+        cols=6,
+        rows=4,
+        color_a=(0.78, 0.78, 0.74),
+        color_b=(0.09, 0.10, 0.11),
+    )
+
+    wall_col = (0.14, 0.17, 0.15)
+    plinth_col = (0.05, 0.05, 0.06)
+    _draw_oriented_box(cx, 0.18, cz - room_half * 0.98, room_half * 0.98, 0.16, 0.24, 0.0, plinth_col)
+    _draw_oriented_box(cx, room_h * 0.58, cz - room_half * 1.02, room_half * 0.96, room_h * 0.58, 0.20, 0.0, wall_col)
+    _draw_oriented_box(cx - room_half * 1.02, room_h * 0.50, cz - room_half * 0.10, room_half * 0.56, room_h * 0.50, 0.20, math.pi * 0.5, wall_col)
+    _draw_oriented_box(cx + room_half * 1.02, room_h * 0.50, cz - room_half * 0.10, room_half * 0.56, room_h * 0.50, 0.20, math.pi * 0.5, wall_col)
+
+    # Световые панели на задней стене в матричном зелёном тоне.
+    for off in (-room_half * 0.46, 0.0, room_half * 0.46):
+        px = cx + off
+        pz = cz - room_half * 0.82
+        _draw_oriented_box(px, room_h * 0.86, pz, room_half * 0.18, room_h * 0.28, 0.05, 0.0, (0.22, 0.48, 0.28))
+        pulse = 0.5 + 0.5 * math.sin(global_time * 2.8 + off * 0.18)
+        _draw_ring(px, pz + 0.18, radius=room_half * (0.12 + pulse * 0.02), y=0.04, rgb=(0.42, 1.0, 0.66), width=1.0, alpha=0.09 + pulse * 0.08)
+
+    # Два бордовых кресла и столик — узнаваемый мотив сцены Морфеуса и Нео.
+    chair_leather = (0.42, 0.08, 0.07)
+    chair_trim = (0.21, 0.05, 0.04)
+    set_cx = cx
+    set_cz = cz - room_half * 0.04
+    _draw_construct_armchair(set_cx - room_half * 0.34, set_cz, yaw_rad=math.radians(18.0), leather=chair_leather, trim=chair_trim)
+    _draw_construct_armchair(set_cx + room_half * 0.34, set_cz, yaw_rad=math.pi - math.radians(18.0), leather=chair_leather, trim=chair_trim)
+    _draw_construct_table(set_cx, set_cz, global_time=global_time)
+    _draw_construct_lamp(cx - room_half * 0.78, cz + room_half * 0.46, global_time=global_time)
+
+    # Окружная маркировка safe-room, но уже не как простой диск.
+    pulse = 0.5 + 0.5 * math.sin(global_time * 2.2 + cx * 0.1)
+    _draw_ring(cx, cz, radius=room_half * (1.04 + pulse * 0.02), y=0.032, rgb=(0.32, 0.96, 0.70), width=1.4, alpha=0.24 + pulse * 0.10)
+    _draw_ring(cx, cz, radius=room_half * 0.76, y=0.032, rgb=(0.86, 0.86, 0.80), width=1.0, alpha=0.16)
+
+
 def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
     if inst.kind == "house":
         _draw_house(inst)
@@ -1609,6 +1778,45 @@ def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
 
 
 # --- отрисовка агента ------------------------------------------------
+
+LAB_AGENT_TAG = "lab_subject"
+TRAINING_ROOM_TAG = "training_room"
+
+
+def _agent_public_tags(agent: AgentEntity) -> List[str]:
+    tags = agent.public_state.get("tags", [])
+    if not isinstance(tags, list):
+        return []
+    return [str(t) for t in tags]
+
+
+def _draw_agent_special_markers(agent: AgentEntity, t: float) -> None:
+    tags = set(_agent_public_tags(agent))
+    if not tags:
+        return
+    px = float(agent.transform.pos.x)
+    pz = float(agent.transform.pos.z)
+    pulse = (math.sin(t * 3.6) * 0.5 + 0.5)
+    if LAB_AGENT_TAG in tags:
+        _draw_ring(
+            px,
+            pz,
+            radius=1.24 + pulse * 0.10,
+            y=0.06,
+            rgb=(0.18, 0.92, 0.66),
+            width=1.7,
+            alpha=0.48 + 0.18 * pulse,
+        )
+    if TRAINING_ROOM_TAG in tags:
+        _draw_ring(
+            px,
+            pz,
+            radius=0.76 + pulse * 0.08,
+            y=0.07,
+            rgb=(0.98, 1.0, 0.70),
+            width=1.2,
+            alpha=0.44 + 0.16 * pulse,
+        )
 
 def draw_agent_humanoid(agent: AgentEntity, t: float):
     yaw = float(agent.transform.yaw)
@@ -1756,6 +1964,8 @@ def draw_agent_humanoid(agent: AgentEntity, t: float):
         breath = 0.01 * math.sin(t * 2.4 + phase * 0.5)
         _part_box(0.0, chest_y + breath, -0.06, 0.20, 0.03, 0.05, _mix_rgb(cloth_main, (0.85, 0.85, 0.88), 0.25), pitch=fwd_lean * 0.6)
 
+    _draw_agent_special_markers(agent, t)
+
     # КОЛЬЦО ВЫБОРА (с пульсом)
     if agent.selected:
         base_r = 1.10
@@ -1829,6 +2039,8 @@ def draw_agent_impostor(agent: AgentEntity, t: float):
         lat_steps=5,
         lon_steps=8,
     )
+
+    _draw_agent_special_markers(agent, t)
 
     if agent.selected:
         pulse = (math.sin(t * 4.0) * 0.5 + 0.5) if SELECTED_PULSE else 0.0
@@ -3043,6 +3255,9 @@ class MiniMatrixEngine:
 
         # зоны с сервера
         for zone in visible_zones:
+            if _is_training_room_zone(zone):
+                _draw_matrix_construct_room(zone, self._time_accum)
+                continue
             _draw_disc_zone(zone.x, zone.z, zone.radius, zone.kind, y=0.02)
 
         # цели агентов (кольца)
