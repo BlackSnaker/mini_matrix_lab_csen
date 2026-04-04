@@ -110,8 +110,11 @@ Inspector/HUD показывают эти данные live, в синхроне
 **Как запустить:**
 
 ```bash
+python install.py
 python training_room.py --ollama-model=llama3.2:latest
 ```
+
+`install.py` ставит Python-зависимости проекта и, если `ollama` не найден в системе, запускает официальный инсталлятор Ollama автоматически.
 
 **Полезные ссылки:**
 
@@ -165,6 +168,24 @@ uv venv && source .venv/bin/activate
 uv pip install PySide6 PyOpenGL numpy
 # при необходимости
 uv pip install moderngl glfw pyrr
+```
+
+**Рекомендуемая установка проекта с автоустановкой Ollama:**
+```bash
+python install.py
+```
+
+Скрипт:
+- устанавливает Python-зависимости из `requirements.txt`;
+- проверяет наличие `ollama` в системе;
+- если Ollama отсутствует, скачивает и запускает официальный инсталлятор для текущей ОС.
+
+Полезные флаги:
+```bash
+python install.py --skip-ollama
+python install.py --skip-python
+python install.py --ollama-version=<version>
+python install.py --no-ollama-start
 ```
 
 **Запуск:**
