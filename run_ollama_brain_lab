@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  while [[ -L "$source_path" ]]; do
+    local source_dir
+    source_dir="$(cd "$(dirname "$source_path")" && pwd)"
+    source_path="$(readlink "$source_path")"
+    [[ "$source_path" != /* ]] && source_path="$source_dir/$source_path"
+  done
+  cd "$(dirname "$source_path")" && pwd
+}
+
+ROOT_DIR="$(resolve_script_path)"
+LAB_SCRIPT="$ROOT_DIR/ollama_brain_lab.py"
+INSTALL_SCRIPT="$ROOT_DIR/install.py"
+SERVE_LOG="$ROOT_DIR/ollama_brain_lab.serve.log"
+cd "$ROOT_DIR"
+
+if [[ ! -f "$LAB_SCRIPT" ]]; then
+  echo "Не найден файл утилиты: $LAB_SCRIPT" >&2
+  exit 1
+fi
+
+pick_python() {
+  if [[ -x "$ROOT_DIR/venv/bin/python" ]]; then
+    echo "$ROOT_DIR/venv/bin/python"
+    return 0
+  fi
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    echo "$ROOT_DIR/.venv/bin/python"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(pick_python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "Не найден Python. Установи Python 3.11+ или активируй venv." >&2
+  exit 1
+fi
+
+probe_host() {
+  local host="$1"
+  "$PYTHON_BIN" - "$host" <<'PY'
+import json
+import sys
+import urllib.request
+
+base = str(sys.argv[1]).rstrip("/")
+try:
+    req = urllib.request.Request(base + "/api/tags", headers={"Accept": "application/json"}, method="GET")
+    with urllib.request.urlopen(req, timeout=1.5) as resp:
+        payload = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+    sys.exit(0 if isinstance(payload, dict) else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+python_ready() {
+  "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import numpy
+import mind_core
+import ollama_coach
+import ollama_brain_lab
+PY
+}
+
+local_host() {
+  local host="$1"
+  [[ "$host" == "http://127.0.0.1:11434" || "$host" == "http://localhost:11434" || "$host" == "127.0.0.1:11434" || "$host" == "localhost:11434" ]]
+}
+
+find_ollama_bin() {
+  if command -v ollama >/dev/null 2>&1; then
+    command -v ollama
+    return 0
+  fi
+  if [[ -x "$HOME/.local/bin/ollama" ]]; then
+    echo "$HOME/.local/bin/ollama"
+    return 0
+  fi
+  if [[ -x "/usr/local/bin/ollama" ]]; then
+    echo "/usr/local/bin/ollama"
+    return 0
+  fi
+  if [[ -x "/usr/bin/ollama" ]]; then
+    echo "/usr/bin/ollama"
+    return 0
+  fi
+  return 1
+}
+
+ensure_python_ready() {
+  if python_ready; then
+    return 0
+  fi
+  if [[ ! -f "$INSTALL_SCRIPT" ]]; then
+    echo "Не найден install.py, а окружение проекта неполное." >&2
+    exit 1
+  fi
+  echo "[setup] Устанавливаю Python-зависимости проекта..."
+  "$PYTHON_BIN" "$INSTALL_SCRIPT" --skip-ollama
+}
+
+ensure_ollama_installed() {
+  if find_ollama_bin >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ! -f "$INSTALL_SCRIPT" ]]; then
+    echo "Не найден install.py, не могу автоматически установить Ollama." >&2
+    exit 1
+  fi
+  echo "[setup] Ollama не найден. Запускаю автоустановку..."
+  "$PYTHON_BIN" "$INSTALL_SCRIPT" --skip-python
+}
+
+ensure_ollama_running() {
+  local host="$1"
+  if ! local_host "$host"; then
+    return 0
+  fi
+  if probe_host "$host"; then
+    return 0
+  fi
+  local ollama_bin
+  ollama_bin="$(find_ollama_bin || true)"
+  if [[ -z "$ollama_bin" ]]; then
+    ensure_ollama_installed
+    ollama_bin="$(find_ollama_bin || true)"
+  fi
+  if [[ -z "$ollama_bin" ]]; then
+    echo "Не удалось найти бинарник Ollama после установки." >&2
+    exit 1
+  fi
+  echo "[setup] Поднимаю локальный Ollama runtime..."
+  nohup "$ollama_bin" serve >"$SERVE_LOG" 2>&1 &
+  for _ in $(seq 1 25); do
+    sleep 1
+    if probe_host "$host"; then
+      return 0
+    fi
+  done
+  echo "Ollama runtime не ответил на $host. Проверь $SERVE_LOG" >&2
+  exit 1
+}
+
+print_examples() {
+  cat <<'EOF'
+CSEN Ollama Brain Lab Launcher
+
+Быстрый запуск:
+  ./run_ollama_brain_lab a1
+  ./run_ollama_brain_lab room_brains/a1.room_ollama.json
+  ./run_ollama_brain_lab --brain-id a1 --model llama3.2:latest
+  ./run_ollama_brain_lab --brain-file room_brains/a1.room_ollama.json --no-write-back
+  ./run_ollama_brain_lab a1 --model llama3.2:latest
+
+Launcher сам:
+  1. проверяет Python-окружение проекта;
+  2. при необходимости запускает install.py;
+  3. проверяет наличие Ollama;
+  4. пытается поднять локальный runtime;
+  5. запускает полный brain-study процесс.
+
+Если нужен полный список опций:
+  ./run_ollama_brain_lab --help
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  print_examples
+  exec "$PYTHON_BIN" -u "$LAB_SCRIPT" --help
+fi
+
+for arg in "$@"; do
+  if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+    print_examples
+    exec "$PYTHON_BIN" -u "$LAB_SCRIPT" --help
+  fi
+done
+
+SKIP_SETUP=0
+SKIP_INSTALL=0
+SKIP_SERVE=0
+HOST_VALUE="${CSEN_OLLAMA_HOST:-${OLLAMA_HOST:-http://127.0.0.1:11434}}"
+LAB_ARGS=()
+POSITIONAL_SHORTCUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-setup)
+      SKIP_SETUP=1
+      shift
+      ;;
+    --skip-install)
+      SKIP_INSTALL=1
+      shift
+      ;;
+    --skip-serve)
+      SKIP_SERVE=1
+      shift
+      ;;
+    --host=*)
+      HOST_VALUE="${1#*=}"
+      LAB_ARGS+=("$1")
+      shift
+      ;;
+    --host)
+      if [[ $# -lt 2 ]]; then
+        echo "Ожидалось значение после --host" >&2
+        exit 1
+      fi
+      HOST_VALUE="$2"
+      LAB_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --*)
+      LAB_ARGS+=("$1")
+      shift
+      if [[ ${#LAB_ARGS[@]} -ge 1 ]]; then
+        last_flag="${LAB_ARGS[${#LAB_ARGS[@]}-1]}"
+        if [[ "$last_flag" == "--brain-id" || "$last_flag" == "--brain-file" || "$last_flag" == "--model" || "$last_flag" == "--timeout" || "$last_flag" == "--retries" || "$last_flag" == "--keep-alive" || "$last_flag" == "--predict-scale" || "$last_flag" == "--max-request-timeout" || "$last_flag" == "--max-units-per-run" || "$last_flag" == "--cooldown-sec" || "$last_flag" == "--report-out" || "$last_flag" == "--progress-out" || "$last_flag" == "--checkpoint-out" ]]; then
+          if [[ $# -lt 1 ]]; then
+            echo "Ожидалось значение после $last_flag" >&2
+            exit 1
+          fi
+          LAB_ARGS+=("$1")
+          shift
+        fi
+      fi
+      ;;
+    *)
+      if [[ -z "$POSITIONAL_SHORTCUT" ]]; then
+        POSITIONAL_SHORTCUT="$1"
+      else
+        LAB_ARGS+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "$POSITIONAL_SHORTCUT" ]]; then
+  if [[ -f "$ROOT_DIR/$POSITIONAL_SHORTCUT" || -f "$POSITIONAL_SHORTCUT" ]]; then
+    if [[ -f "$ROOT_DIR/$POSITIONAL_SHORTCUT" ]]; then
+      LAB_ARGS=(--brain-file "$ROOT_DIR/$POSITIONAL_SHORTCUT" "${LAB_ARGS[@]}")
+    else
+      LAB_ARGS=(--brain-file "$POSITIONAL_SHORTCUT" "${LAB_ARGS[@]}")
+    fi
+  else
+    LAB_ARGS=(--brain-id "$POSITIONAL_SHORTCUT" "${LAB_ARGS[@]}")
+  fi
+fi
+
+if [[ $SKIP_SETUP -eq 0 ]]; then
+  ensure_python_ready
+  if local_host "$HOST_VALUE"; then
+    if [[ $SKIP_INSTALL -eq 0 && $SKIP_SERVE -eq 0 ]]; then
+      if ! probe_host "$HOST_VALUE"; then
+        ensure_ollama_installed
+      fi
+      ensure_ollama_running "$HOST_VALUE"
+    elif [[ $SKIP_INSTALL -eq 0 ]]; then
+      if ! probe_host "$HOST_VALUE"; then
+        ensure_ollama_installed
+      fi
+    elif [[ $SKIP_SERVE -eq 0 ]]; then
+      ensure_ollama_running "$HOST_VALUE"
+    fi
+  fi
+fi
+
+if [[ ${#LAB_ARGS[@]} -eq 0 ]]; then
+  print_examples
+  exec "$PYTHON_BIN" -u "$LAB_SCRIPT" --help
+fi
+
+exec "$PYTHON_BIN" -u "$LAB_SCRIPT" "${LAB_ARGS[@]}"

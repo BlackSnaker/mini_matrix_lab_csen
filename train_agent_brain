@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  while [[ -L "$source_path" ]]; do
+    local source_dir
+    source_dir="$(cd "$(dirname "$source_path")" && pwd)"
+    source_path="$(readlink "$source_path")"
+    [[ "$source_path" != /* ]] && source_path="$source_dir/$source_path"
+  done
+  cd "$(dirname "$source_path")" && pwd
+}
+
+ROOT_DIR="$(resolve_script_path)"
+LAUNCHER="$ROOT_DIR/run_ollama_brain_lab"
+DEFAULT_BRAIN_FILE="${CSEN_AGENT_BRAIN_FILE:-$ROOT_DIR/brains/agent_1.json}"
+DEFAULT_BRAIN_ID="${CSEN_AGENT_BRAIN_ID:-}"
+DEFAULT_MODEL="${CSEN_AGENT_MODEL:-}"
+DEFAULT_TIMEOUT="${CSEN_AGENT_TIMEOUT:-120}"
+DEFAULT_RETRIES="${CSEN_AGENT_RETRIES:-1}"
+DEFAULT_KEEP_ALIVE="${CSEN_AGENT_KEEP_ALIVE:-20m}"
+DEFAULT_PREDICT_SCALE="${CSEN_AGENT_PREDICT_SCALE:-0.65}"
+DEFAULT_MAX_UNITS="${CSEN_AGENT_MAX_UNITS:-6}"
+DEFAULT_COOLDOWN_SEC="${CSEN_AGENT_COOLDOWN_SEC:-1.0}"
+DEFAULT_MAX_REQUEST_TIMEOUT="${CSEN_AGENT_MAX_REQUEST_TIMEOUT:-75}"
+
+if [[ ! -x "$LAUNCHER" ]]; then
+  echo "Не найден launcher brain-lab: $LAUNCHER" >&2
+  exit 1
+fi
+
+print_help() {
+  cat <<EOF
+CSEN Agent Brain Training
+
+Один запуск для полного обучения Ollama на мозге агента.
+
+По умолчанию:
+  brain-file: $DEFAULT_BRAIN_FILE
+  model:      ${DEFAULT_MODEL:-auto}
+  timeout:    $DEFAULT_TIMEOUT
+  retries:    $DEFAULT_RETRIES
+  keep-alive: $DEFAULT_KEEP_ALIVE
+  predict-scale: $DEFAULT_PREDICT_SCALE
+  max-request-timeout: $DEFAULT_MAX_REQUEST_TIMEOUT
+  max-units-per-run: $DEFAULT_MAX_UNITS
+  cooldown-sec: $DEFAULT_COOLDOWN_SEC
+
+Запуск:
+  train_agent_brain
+
+Необязательно:
+  train_agent_brain --model llama3.2:latest
+  train_agent_brain --timeout 300 --retries 3
+  train_agent_brain --max-request-timeout 60
+  train_agent_brain --max-units-per-run 0
+  train_agent_brain --brain-id a1
+  train_agent_brain --fresh-start
+  train_agent_brain /home/oliver/mini_matrix_lab_csen/brains/agent_1.json
+
+Переменные окружения:
+  CSEN_AGENT_BRAIN_FILE  переопределяет brain-file по умолчанию
+  CSEN_AGENT_BRAIN_ID    переопределяет brain-id по умолчанию
+  CSEN_AGENT_MODEL       переопределяет модель по умолчанию
+  CSEN_AGENT_TIMEOUT     переопределяет timeout по умолчанию
+  CSEN_AGENT_RETRIES     переопределяет число retry по умолчанию
+  CSEN_AGENT_KEEP_ALIVE  переопределяет keep-alive по умолчанию
+  CSEN_AGENT_PREDICT_SCALE  переопределяет scale для num_predict
+  CSEN_AGENT_MAX_REQUEST_TIMEOUT  переопределяет hard cap одного запроса
+  CSEN_AGENT_MAX_UNITS      переопределяет лимит unit-ов за запуск
+  CSEN_AGENT_COOLDOWN_SEC   переопределяет паузу между unit-ами
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    --help|-h)
+      print_help
+      exit 0
+      ;;
+  esac
+fi
+
+ARGS=("$@")
+if [[ $# -eq 0 ]]; then
+  if [[ -n "$DEFAULT_BRAIN_ID" ]]; then
+    ARGS=(--brain-id "$DEFAULT_BRAIN_ID")
+  else
+    if [[ ! -f "$DEFAULT_BRAIN_FILE" ]]; then
+      echo "Не найден brain-файл по умолчанию: $DEFAULT_BRAIN_FILE" >&2
+      exit 1
+    fi
+    ARGS=(--brain-file "$DEFAULT_BRAIN_FILE")
+  fi
+  ARGS+=(--resume --low-resource --timeout "$DEFAULT_TIMEOUT" --retries "$DEFAULT_RETRIES" --keep-alive "$DEFAULT_KEEP_ALIVE" --predict-scale "$DEFAULT_PREDICT_SCALE" --max-request-timeout "$DEFAULT_MAX_REQUEST_TIMEOUT" --max-units-per-run "$DEFAULT_MAX_UNITS" --cooldown-sec "$DEFAULT_COOLDOWN_SEC")
+  if [[ -n "$DEFAULT_MODEL" ]]; then
+    ARGS+=(--model "$DEFAULT_MODEL")
+  fi
+fi
+
+exec "$LAUNCHER" "${ARGS[@]}"

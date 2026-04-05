@@ -935,6 +935,24 @@ class OllamaBrainService:
             self._record_manual_command_example(world, room, agent, brain, success=True, outcome="memorized", tick=tick)
             self._clear_manual_command_state(agent)
             return True
+        if ctype == "tune_emotion":
+            self._apply_emotion_tone(
+                agent,
+                brain,
+                preset=str(control.get("preset") or ""),
+                fear=control.get("fear"),
+                curiosity=control.get("curiosity"),
+                energy_delta=control.get("energy_delta"),
+                drive=control.get("drive"),
+                thought=control.get("thought"),
+                lesson=lesson or "Настраиваю эмоциональный фон.",
+                tick=tick,
+                command_source="manual",
+            )
+            self._append_log(brain, "system", "Эмоциональное состояние скорректировано локально.", tick=tick)
+            self._record_manual_command_example(world, room, agent, brain, success=True, outcome="emotion_tuned", tick=tick)
+            self._clear_manual_command_state(agent)
+            return True
         return False
 
     def _apply_structured_action(
@@ -983,6 +1001,21 @@ class OllamaBrainService:
             if text:
                 self._apply_memory_note(agent, brain, text=text, tick=tick, lesson="", command_source=command_source)
                 return {"status": "memorized"}
+        if name == "tune_emotion":
+            self._apply_emotion_tone(
+                agent,
+                brain,
+                preset=str(args.get("preset") or ""),
+                fear=args.get("fear"),
+                curiosity=args.get("curiosity"),
+                energy_delta=args.get("energy_delta"),
+                drive=args.get("drive"),
+                thought=args.get("thought"),
+                lesson=lesson,
+                tick=tick,
+                command_source=command_source,
+            )
+            return {"status": "emotion_tuned"}
         return {}
 
     def _landmark_goal(self, agent: Any, world: Any, room: Any, landmark: str) -> Optional[Tuple[float, float]]:
@@ -1160,6 +1193,127 @@ class OllamaBrainService:
         if lesson:
             self._append_log(brain, "ollama", lesson, tick=tick)
         self._append_log(brain, "agent", f"{thought} Скорость={float(target):.2f}.", tick=tick)
+
+    def _apply_emotion_tone(
+        self,
+        agent: Any,
+        brain: Any,
+        *,
+        preset: str,
+        fear: Any,
+        curiosity: Any,
+        energy_delta: Any,
+        drive: Any,
+        thought: Any,
+        lesson: str,
+        tick: int,
+        command_source: str,
+    ) -> None:
+        preset_key = str(preset or "").strip().casefold()
+        target_fear = None if fear is None else _safe_float(fear, 0.1)
+        target_curiosity = None if curiosity is None else _safe_float(curiosity, 0.5)
+        delta_energy = _safe_float(energy_delta, 0.0) if energy_delta is not None else 0.0
+        target_drive = str(drive or "").strip()
+        thought_text = str(thought or "").strip()
+
+        if preset_key == "calm":
+            target_fear = 0.06 if target_fear is None else target_fear
+            target_curiosity = 0.34 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "idle"
+            thought_text = thought_text or "Успокаиваюсь и выравниваю состояние."
+        elif preset_key == "focus":
+            target_fear = 0.08 if target_fear is None else target_fear
+            target_curiosity = 0.42 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "idle"
+            thought_text = thought_text or "Собираюсь и держу фокус."
+        elif preset_key == "curious":
+            target_fear = 0.08 if target_fear is None else target_fear
+            target_curiosity = 0.82 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "explore"
+            thought_text = thought_text or "Мне интересно изучить комнату."
+        elif preset_key == "brave":
+            target_fear = 0.03 if target_fear is None else target_fear
+            target_curiosity = 0.58 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "explore"
+            thought_text = thought_text or "Действую увереннее."
+        elif preset_key == "rest":
+            target_fear = 0.04 if target_fear is None else target_fear
+            target_curiosity = 0.22 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "rest"
+            delta_energy = delta_energy if abs(delta_energy) > 1e-6 else 8.0
+            thought_text = thought_text or "Делаю паузу и восстанавливаюсь."
+        elif preset_key == "energize":
+            target_fear = 0.08 if target_fear is None else target_fear
+            target_curiosity = 0.74 if target_curiosity is None else target_curiosity
+            target_drive = target_drive or "explore"
+            delta_energy = delta_energy if abs(delta_energy) > 1e-6 else 10.0
+            thought_text = thought_text or "Чувствую прилив энергии."
+
+        if target_fear is not None:
+            target_fear = _safe_float(max(0.0, min(1.0, target_fear)), 0.08)
+            try:
+                brain.fear_level = float(target_fear)
+            except Exception:
+                pass
+            try:
+                agent.fear = float(target_fear)
+            except Exception:
+                pass
+        if target_curiosity is not None:
+            target_curiosity = _safe_float(max(0.0, min(1.0, target_curiosity)), 0.5)
+            try:
+                brain.curiosity_charge = float(target_curiosity)
+            except Exception:
+                pass
+            try:
+                if hasattr(brain, "behavior_rules"):
+                    shift = 0.0
+                    if target_curiosity >= 0.7:
+                        shift = 0.08
+                    elif target_curiosity <= 0.3:
+                        shift = -0.05
+                    if shift != 0.0:
+                        brain.behavior_rules.exploration_bias = max(
+                            0.0,
+                            min(1.0, float(getattr(brain.behavior_rules, "exploration_bias", 0.2)) + shift),
+                        )
+            except Exception:
+                pass
+        if abs(delta_energy) > 1e-6:
+            try:
+                agent.energy = max(0.0, min(100.0, _safe_float(getattr(agent, "energy", 100.0), 100.0) + float(delta_energy)))
+            except Exception:
+                pass
+            try:
+                brain.energy = max(0.0, min(100.0, _safe_float(getattr(brain, "energy", 100.0), 100.0) + float(delta_energy)))
+            except Exception:
+                pass
+        if target_drive:
+            try:
+                brain.current_drive = str(target_drive)
+            except Exception:
+                pass
+        if not thought_text:
+            thought_text = "Подстраиваю внутреннее состояние."
+        try:
+            brain.ollama_last_model = str(getattr(brain, "ollama_last_model", None) or "brain_local_command")
+            brain.ollama_last_thought = thought_text[:140]
+            brain.ollama_last_response_tick = int(tick)
+            brain.ollama_status = "emotion_tuned"
+            brain.ollama_active_command_source = str(command_source or "auto")
+            brain.last_thought = brain.ollama_last_thought
+        except Exception:
+            pass
+        if command_source == "manual":
+            self._mark_operator_override(brain, tick=tick, hold_ticks=72)
+        if lesson:
+            self._append_log(brain, "ollama", lesson, tick=tick)
+        self._append_log(
+            brain,
+            "agent",
+            f"{thought_text[:120]} fear={getattr(brain, 'fear_level', getattr(agent, 'fear', 0.0)):.2f} curiosity={getattr(brain, 'curiosity_charge', 0.5):.2f}.",
+            tick=tick,
+        )
 
     def _apply_memory_note(self, agent: Any, brain: Any, *, text: str, tick: int, lesson: str, command_source: str) -> None:
         note = str(text or "").strip()

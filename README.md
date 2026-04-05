@@ -65,6 +65,7 @@ Inspector/HUD показывают эти данные live, в синхроне
 
 - [Ключевые возможности](#ключевые-возможности)
 - [Комната Морфеуса](#комната-морфеуса)
+- [Новые Методы И Утилиты](#новые-методы-и-утилиты)
 - [Последние визуальные улучшения](#последние-визуальные-улучшения)
 - [Быстрый старт](#быстрый-старт)
 - [Структура проекта](#структура-проекта)
@@ -139,6 +140,34 @@ python training_room.py --ollama-model=llama3.2:latest
 2. Обучить одного агента командами через встроенную Ollama-консоль.
 3. Сохранить отдельный room-brain с историей обучения.
 4. Выпустить уже натренированного агента в общий мир.
+
+**Важно сейчас:**
+
+- В room-only режиме [`training_room.py`](training_room.py) по умолчанию используется именно `agent_1`, а не `Echo`.
+- Если в [`brains/agent_1.json`](brains/agent_1.json) уже есть обученный brain с `ollama`-профилем, он подхватывается автоматически при запуске комнаты.
+
+---
+
+## Новые Методы И Утилиты
+
+> Краткий обзор всех новых механизмов, добавленных вокруг комнаты Морфеуса, прямого Ollama-управления и layered brain-study.
+
+**Что появилось в проекте:**
+
+- `TrainingRoomManager` в [`training_room.py`](training_room.py): безопасная комната, изоляция одного агента, room-brain export, выпуск обратно в мир.
+- Room-only окно `MorpheusRoomWindow` в [`training_room.py`](training_room.py): отдельный запуск комнаты без полной карты мира.
+- Хук [`CombinedMainWindow._initial_agent_lineup()`](combined_app.py): позволяет переопределять стартовый lineup и подменять `Echo` на `agent_1` для room-only режима.
+- `OllamaBrainService` в [`ollama_brain_service.py`](ollama_brain_service.py): очередь инструкций, authoritative override, structured actions, локальное исполнение простых команд и управление эмоциональным состоянием агента.
+- `OllamaCoach` в [`ollama_coach.py`](ollama_coach.py): интерпретация команд, prompt-building, structured `action`, `goal`, `belief`, `behavior`.
+- Layered brain-study утилита [`ollama_brain_lab.py`](ollama_brain_lab.py): поэтапное изучение мозга агента, `brain_map`, resource budget, `resume`, `checkpoint`, `completed_with_fallback`.
+- Профилировщик мозга [`ollama_brain_profile.py`](ollama_brain_profile.py): разрезание brain-state по слоям `identity / beliefs / memory / commands / dialogue / emotion`.
+- Launcher [`run_ollama_brain_lab`](run_ollama_brain_lab): one-file запуск полного процесса с проверкой Python, проекта и Ollama runtime.
+- Wrapper [`train_agent_brain`](train_agent_brain): одна команда для обучения Ollama на мозге `agent_1`.
+- Автоустановка Ollama в [`install.py`](install.py), если локальный runtime отсутствует.
+
+**Полное описание методов и сценариев:**
+
+- [`docs/OLLAMA_BRAIN_METHODS_RU.md`](docs/OLLAMA_BRAIN_METHODS_RU.md)
 
 ---
 

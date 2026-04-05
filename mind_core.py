@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Tuple, Optional
 import math
 import random
 
+from ollama_brain_profile import summarize_brain_profile
+
 # Попробуем подключить NumPy для компактной математики; если нет — дадим понятную ошибку
 try:
     import numpy as np
@@ -292,6 +294,10 @@ class ConsciousnessBlock:
     ollama_authoritative_commands: bool = True
     ollama_operator_override_until_tick: int = -10**9
     ollama_active_command_source: Optional[str] = None
+    ollama_brain_profile: Dict[str, Any] = field(default_factory=dict)
+    ollama_brain_profile_updated_at: Optional[str] = None
+    ollama_brain_training_tail: List[Dict[str, Any]] = field(default_factory=list)
+    ollama_brain_training_seq: int = 0
 
     # --- временные флаги / контекст последнего тика ---------------------
     _took_damage_recently: bool = False
@@ -419,6 +425,10 @@ class ConsciousnessBlock:
                 "authoritative_commands": bool(self.ollama_authoritative_commands),
                 "operator_override_until_tick": int(self.ollama_operator_override_until_tick),
                 "active_command_source": self.ollama_active_command_source,
+                "brain_profile": dict(self.ollama_brain_profile or {}),
+                "brain_profile_updated_at": self.ollama_brain_profile_updated_at,
+                "brain_training_tail": list(self.ollama_brain_training_tail[-48:]),
+                "brain_training_seq": int(self.ollama_brain_training_seq),
             },
         }
 
@@ -548,6 +558,14 @@ class ConsciousnessBlock:
             block.ollama_operator_override_until_tick = int(_safe_float(ollama_raw.get("operator_override_until_tick", -10**9), -10**9))
             src = ollama_raw.get("active_command_source")
             block.ollama_active_command_source = str(src).strip() if src is not None and str(src).strip() else None
+            profile = ollama_raw.get("brain_profile", {}) or {}
+            if isinstance(profile, dict):
+                block.ollama_brain_profile = dict(profile)
+            block.ollama_brain_profile_updated_at = ollama_raw.get("brain_profile_updated_at")
+            train_tail = ollama_raw.get("brain_training_tail", []) or []
+            if isinstance(train_tail, list):
+                block.ollama_brain_training_tail = [dict(row) for row in train_tail if isinstance(row, dict)][-48:]
+            block.ollama_brain_training_seq = int(_safe_float(ollama_raw.get("brain_training_seq", len(block.ollama_brain_training_tail)), len(block.ollama_brain_training_tail)))
 
         gc_raw = data.get("gc_policy")
         if gc_raw:
@@ -1074,6 +1092,48 @@ class ConsciousnessBlock:
         kept.append(payload)
         self.ollama_command_examples = kept[-80:]
 
+    def append_ollama_training_stage(self, row: Dict[str, Any], *, tick: Optional[int] = None) -> None:
+        if not isinstance(row, dict):
+            return
+        try:
+            tick_val = int(self.age_ticks if tick is None else tick)
+        except Exception:
+            tick_val = int(self.age_ticks)
+        payload = dict(row)
+        payload["tick"] = tick_val
+        self.ollama_brain_training_seq = int(self.ollama_brain_training_seq) + 1
+        payload["seq"] = int(self.ollama_brain_training_seq)
+        kept: List[Dict[str, Any]] = []
+        for existing in list(self.ollama_brain_training_tail or []):
+            if isinstance(existing, dict):
+                kept.append(dict(existing))
+        kept.append(payload)
+        self.ollama_brain_training_tail = kept[-48:]
+
+    def set_ollama_brain_profile(
+        self,
+        profile: Dict[str, Any],
+        *,
+        updated_at: Optional[str] = None,
+        tick: Optional[int] = None,
+        summary: Optional[str] = None,
+    ) -> None:
+        if not isinstance(profile, dict):
+            return
+        self.ollama_brain_profile = dict(profile)
+        text = str(updated_at or profile.get("trained_at") or "").strip()
+        self.ollama_brain_profile_updated_at = text or None
+        stage_summary = str(summary or ((profile.get("identity") or {}).get("summary") if isinstance(profile.get("identity"), dict) else "") or "").strip()
+        if stage_summary:
+            self.append_ollama_training_stage(
+                {
+                    "stage": "brain_profile",
+                    "summary": stage_summary[:200],
+                    "trained_at": self.ollama_brain_profile_updated_at,
+                },
+                tick=tick,
+            )
+
     def configure_ollama(
         self,
         *,
@@ -1166,6 +1226,10 @@ class ConsciousnessBlock:
             "log_seq": int(self.ollama_log_seq),
             "command_examples": list(self.ollama_command_examples[-24:]),
             "command_example_seq": int(self.ollama_command_example_seq),
+            "brain_profile": summarize_brain_profile(self.ollama_brain_profile),
+            "brain_profile_updated_at": self.ollama_brain_profile_updated_at,
+            "brain_training_tail": list(self.ollama_brain_training_tail[-12:]),
+            "brain_training_seq": int(self.ollama_brain_training_seq),
         }
 
     # --------------------------------------------------------------------

@@ -1904,6 +1904,15 @@ class FirstPersonOverlay(QtWidgets.QWidget):
 # 6) Главное окно: 3 колонки (Stats | 3D | Brain) + Toolbar
 # ====================================================
 class CombinedMainWindow(QtWidgets.QMainWindow):
+    def _initial_agent_lineup(self) -> list[dict[str, str]]:
+        return [
+            {"id": "a1", "name": "Echo", "persona":
+             "Ты Echo. Осторожный выживальщик. Бережёшь Nova, шутишь, но всегда смотришь по сторонам."},
+            {"id": "a2", "name": "Nova", "persona":
+             "Ты Nova. Смелая исследовательница. Действуешь решительно, но не рискуешь зря."},
+            {"id": "agent_0", "name": "A0", "persona": "scout/explorer"},
+        ]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mini-Matrix Lab — 3D + Mind Trainer")
@@ -1938,17 +1947,12 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.engine.world.height = self._showcase_world_h
 
         # 2) тренер + бой
+        agent_lineup = list(self._initial_agent_lineup() or [])
         self.trainer = MindTrainerInteractive(
-            num_agents=3, max_ticks_per_epoch=2000, seed=1234,
+            num_agents=max(1, len(agent_lineup) or 3), max_ticks_per_epoch=2000, seed=1234,
             disaster_interval_ticks=400, relief_after_disaster=80,
             fresh_start=False,
-            agent_lineup=[
-                {"id": "a1", "name": "Echo", "persona":
-                 "Ты Echo. Осторожный выживальщик. Бережёшь Nova, шутишь, но всегда смотришь по сторонам."},
-                {"id": "a2", "name": "Nova", "persona":
-                 "Ты Nova. Смелая исследовательница. Действуешь решительно, но не рискуешь зря."},
-                {"id": "agent_0", "name": "A0", "persona": "scout/explorer"},
-            ],
+            agent_lineup=agent_lineup,
         )
         # При смене эпохи у трейнера пересобираем карту и перепривязываем боёвку.
         self.trainer.epoch_changed.connect(self._on_trainer_epoch_changed)

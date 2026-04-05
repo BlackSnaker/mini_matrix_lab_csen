@@ -9,6 +9,7 @@ import re
 import urllib.error
 import urllib.request
 
+from ollama_brain_profile import summarize_brain_profile
 from ollama_behavior_context import build_behavior_context
 
 
@@ -171,6 +172,35 @@ _SLOW_PATTERNS = (
 _FAST_PATTERNS = (
     "ускорься", "ускорь движение", "иди быстрее", "увеличь скорость", "быстрее",
     "speed up", "walk faster",
+)
+
+_CALM_PATTERNS = (
+    "успокойся", "успокой агента", "не бойся", "перестань бояться", "расслабься",
+    "стань спокойнее", "будь спокойнее", "calm down", "relax",
+)
+
+_FOCUS_PATTERNS = (
+    "сосредоточься", "соберись", "сконцентрируйся", "будь внимательнее",
+    "focus", "concentrate",
+)
+
+_CURIOUS_PATTERNS = (
+    "будь любопытнее", "прояви любопытство", "исследуй смелее", "стань любознательнее",
+    "be curious", "explore more",
+)
+
+_BRAVE_PATTERNS = (
+    "будь смелее", "стань смелее", "будь увереннее", "перестань трусить",
+    "be brave", "be confident",
+)
+
+_REST_PATTERNS = (
+    "отдохни", "усни", "сделай паузу", "передохни", "rest", "take a break",
+)
+
+_ENERGIZE_PATTERNS = (
+    "взбодрись", "воспрянь", "воодушевись", "стань энергичнее", "набери темп",
+    "energize", "wake up", "be more energetic",
 )
 
 _FACE_RELATIVE_PATTERNS = {
@@ -395,6 +425,69 @@ def _infer_speed_action(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _infer_emotion_action(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    raw = _normalize_text(snapshot.get("operator_instruction"))
+    if not raw:
+        return None
+    if any(token in raw for token in _CALM_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "calm",
+            "fear": 0.06,
+            "curiosity": 0.34,
+            "drive": "idle",
+            "thought": "Я спокоен и собран.",
+        }
+    if any(token in raw for token in _FOCUS_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "focus",
+            "fear": 0.08,
+            "curiosity": 0.42,
+            "drive": "idle",
+            "thought": "Я сосредоточен на задаче.",
+        }
+    if any(token in raw for token in _CURIOUS_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "curious",
+            "fear": 0.08,
+            "curiosity": 0.82,
+            "drive": "explore",
+            "thought": "Мне интересно изучить обстановку.",
+        }
+    if any(token in raw for token in _BRAVE_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "brave",
+            "fear": 0.03,
+            "curiosity": 0.58,
+            "drive": "explore",
+            "thought": "Я действую уверенно.",
+        }
+    if any(token in raw for token in _REST_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "rest",
+            "fear": 0.04,
+            "curiosity": 0.22,
+            "drive": "rest",
+            "energy_delta": 8.0,
+            "thought": "Я делаю паузу и восстанавливаюсь.",
+        }
+    if any(token in raw for token in _ENERGIZE_PATTERNS):
+        return {
+            "type": "tune_emotion",
+            "preset": "energize",
+            "fear": 0.08,
+            "curiosity": 0.74,
+            "drive": "explore",
+            "energy_delta": 10.0,
+            "thought": "Я чувствую прилив энергии.",
+        }
+    return None
+
+
 def _infer_sit_sequence(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     raw = _normalize_text(snapshot.get("operator_instruction"))
     if not raw or not any(token in raw for token in _SIT_PATTERNS):
@@ -495,6 +588,9 @@ def _infer_split_sequence(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _infer_single_operator_control(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     text = snapshot.get("operator_instruction")
+    emotion_action = _infer_emotion_action(snapshot)
+    if emotion_action is not None:
+        return emotion_action
     speed_action = _infer_speed_action(snapshot)
     if speed_action is not None:
         return speed_action
@@ -538,6 +634,17 @@ def summarize_control(control: Optional[Dict[str, Any]]) -> str:
         return f"remember_note({str(control.get('text') or args.get('text') or '').strip()[:48]})"
     if ctype == "set_move_speed":
         return f"set_move_speed({round(_safe_float(control.get('speed', args.get('speed')), 0.0), 2)})"
+    if ctype == "tune_emotion":
+        pieces: List[str] = []
+        preset = str(control.get("preset") or args.get("preset") or "").strip()
+        if preset:
+            pieces.append(preset)
+        for key in ("fear", "curiosity", "energy_delta", "drive"):
+            value = control.get(key, args.get(key))
+            if value is None or value == "":
+                continue
+            pieces.append(f"{key}={value}")
+        return "tune_emotion(" + ", ".join(pieces) + ")"
     if ctype == "move":
         goal = control.get("goal")
         if isinstance(goal, tuple) and len(goal) == 2:
@@ -568,6 +675,7 @@ def _tool_specs(landmarks: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         {"name": "set_move_speed", "description": "Изменить скорость ходьбы агента.", "args": {"speed": "0.85..6.5"}},
         {"name": "wait", "description": "Заставить агента стоять на месте некоторое время.", "args": {"ticks": "12..240"}},
         {"name": "remember_note", "description": "Сохранить короткую заметку в память агента.", "args": {"text": "short string"}},
+        {"name": "tune_emotion", "description": "Изменить эмоциональный фон, уверенность, любопытство, восстановление или драйв агента.", "args": {"preset": ["calm", "focus", "curious", "brave", "rest", "energize"], "fear": "0..1", "curiosity": "0..1", "energy_delta": "-20..20", "drive": ["idle", "explore", "rest", "heal", "seek_safety"], "thought": "short string"}},
     ]
 
 
@@ -795,6 +903,7 @@ def build_training_snapshot(
             "current_drive": str(getattr(brain, "current_drive", "idle")) if brain is not None else "idle",
             "survival_score": round(_clamp(_safe_float(getattr(brain, "survival_score", 1.0), 1.0), 0.0, 1.0), 3) if brain is not None else 1.0,
             "curiosity_charge": round(_clamp(_safe_float(getattr(brain, "curiosity_charge", 0.5), 0.5), 0.0, 1.0), 3) if brain is not None else 0.5,
+            "fear_level": round(_clamp(_safe_float(getattr(brain, "fear_level", getattr(agent, "fear", 0.0)), getattr(agent, "fear", 0.0)), 0.0, 1.0), 3) if brain is not None else round(_clamp(_safe_float(getattr(agent, "fear", 0.0), 0.0), 0.0, 1.0), 3),
             "last_thought": str(getattr(brain, "last_thought", "")) if brain is not None else "",
             "behavior_rules": {
                 "avoid_hazard_radius": round(_safe_float(getattr(rules, "avoid_hazard_radius", 6.0), 6.0), 3) if rules is not None else 6.0,
@@ -808,6 +917,7 @@ def build_training_snapshot(
         "tools": tools,
         "active_lesson": dict(active_lesson or {}) if isinstance(active_lesson, dict) else None,
         "operator_instruction": (str(operator_instruction or "").strip() or None),
+        "brain_study": summarize_brain_profile(getattr(brain, "ollama_brain_profile", {}) if brain is not None else {}),
     }
     live_dialogue = list(getattr(brain, "ollama_dialogue_tail", []) or []) if brain is not None else []
     live_examples = list(getattr(brain, "ollama_command_examples", []) or []) if brain is not None else []
@@ -956,6 +1066,24 @@ class OllamaCoach:
             if not text:
                 return None
             return {"name": "remember_note", "args": {"text": text[:240]}}
+        if name in {"tune_emotion", "set_emotion_state"}:
+            preset = _normalize_text(args.get("preset"))
+            drive = str(args.get("drive") or "").strip()
+            thought = str(args.get("thought") or "").strip()
+            payload: Dict[str, Any] = {}
+            if preset in {"calm", "focus", "curious", "brave", "rest", "energize"}:
+                payload["preset"] = preset
+            if "fear" in args:
+                payload["fear"] = round(_clamp(_safe_float(args.get("fear"), 0.1), 0.0, 1.0), 3)
+            if "curiosity" in args:
+                payload["curiosity"] = round(_clamp(_safe_float(args.get("curiosity"), 0.5), 0.0, 1.0), 3)
+            if "energy_delta" in args:
+                payload["energy_delta"] = round(_clamp(_safe_float(args.get("energy_delta"), 0.0), -20.0, 20.0), 2)
+            if drive in {"idle", "explore", "rest", "heal", "seek_safety", "stay_with_ally"}:
+                payload["drive"] = drive
+            if thought:
+                payload["thought"] = thought[:140]
+            return {"name": "tune_emotion", "args": payload} if payload else None
         return None
 
     def _goal_from_action(self, action: Optional[Dict[str, Any]], snapshot: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -989,6 +1117,7 @@ class OllamaCoach:
         brain = snapshot.get("brain", {}) or {}
         tools = list(snapshot.get("tools", []) or [])
         behavior_context = snapshot.get("behavior_context", {}) or {}
+        brain_study = snapshot.get("brain_study", {}) or {}
         active_lesson = snapshot.get("active_lesson")
         operator_instruction = str(snapshot.get("operator_instruction") or "").strip()
         operator_block = ""
@@ -1005,10 +1134,12 @@ class OllamaCoach:
             "Пиши мысль и урок только на русском языке, без английских слов и без Markdown.\n"
             "Если оператор просит шаги вперед, назад, влево или вправо, ориентируйся на agent.facing и agent.step_unit.\n"
             "Используй behavior_context.current_profile как психопрофиль текущего мозга.\n"
+            "Если есть brain_study, считай его результатом длительного изучения полного мозга агента и используй как главный долгосрочный профиль характера, реакции на команды и эмоциональные рычаги.\n"
             "Если есть похожие command_examples, интерпретируй похожую команду тем же способом.\n"
             "Если есть style_priors из архивных мозгов, используй их как мягкие поведенческие priors, но не спорь с прямой командой оператора.\n"
             "Фразы вида «подойди ... и стой там» это не stop, а последовательность move_to_landmark -> wait.\n"
             "Фразы вида «сядь на стул/кресло» в этой комнате означают подойти к ближайшему креслу и остаться там.\n"
+            "Если оператор просит изменить настроение, уверенность, спокойствие, любопытство, энергию или фокус агента, используй action=tune_emotion.\n"
             "Если в command_examples уже есть успешная похожая команда, повторяй тот же action family и не импровизируй.\n"
             "Если запрос можно выразить как инструментальное действие, заполни поле action и выбери инструмент из tools.\n"
             "Нельзя выводить цель за пределы комнаты.\n"
@@ -1031,7 +1162,7 @@ class OllamaCoach:
             '  "reward_hint": число от -1 до 1\n'
             "}\n"
             "Контекст комнаты и агента:\n"
-            f"{json.dumps({'room': room, 'agent': agent, 'brain': brain, 'behavior_context': behavior_context, 'tools': tools, 'active_lesson': active_lesson}, ensure_ascii=False, sort_keys=True)}\n"
+            f"{json.dumps({'room': room, 'agent': agent, 'brain': brain, 'brain_study': brain_study, 'behavior_context': behavior_context, 'tools': tools, 'active_lesson': active_lesson}, ensure_ascii=False, sort_keys=True)}\n"
         )
 
 

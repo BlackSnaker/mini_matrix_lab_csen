@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parent
 REQUIREMENTS_FILE = ROOT / "requirements.txt"
 OLLAMA_INSTALL_SCRIPT_URL = "https://ollama.com/install.sh"
 OLLAMA_WINDOWS_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+USER_BIN_DIR = Path.home() / ".local" / "bin"
+LAUNCHER_SOURCE = ROOT / "run_ollama_brain_lab"
+TRAIN_AGENT_SOURCE = ROOT / "train_agent_brain"
+LAUNCHER_LINKS = (
+    (LAUNCHER_SOURCE, ("run_ollama_brain_lab", "csen_brain_lab")),
+    (TRAIN_AGENT_SOURCE, ("train_agent_brain", "csen_train_agent_brain")),
+)
 
 
 def _step(message: str) -> None:
@@ -128,12 +135,40 @@ def ensure_ollama_installed(*, version: str | None = None, no_start: bool = Fals
     return install_ollama(version=version, no_start=no_start)
 
 
+def install_cli_launchers() -> list[Path]:
+    for source, _names in LAUNCHER_LINKS:
+        if not source.exists():
+            raise FileNotFoundError(f"launcher source not found: {source}")
+    _step("Installing CLI launchers")
+    USER_BIN_DIR.mkdir(parents=True, exist_ok=True)
+    installed: list[Path] = []
+    for source, names in LAUNCHER_LINKS:
+        try:
+            mode = source.stat().st_mode
+            source.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        except Exception:
+            pass
+        for name in names:
+            target = USER_BIN_DIR / name
+            if target.exists() or target.is_symlink():
+                try:
+                    target.unlink()
+                except Exception:
+                    pass
+            os.symlink(source, target)
+            installed.append(target)
+    for path in installed:
+        print(f"Launcher ready: {path}")
+    return installed
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Install Mini-Matrix Lab dependencies and auto-install Ollama if it is missing."
     )
     parser.add_argument("--skip-python", action="store_true", help="Skip installing Python dependencies from requirements.txt.")
     parser.add_argument("--skip-ollama", action="store_true", help="Skip the Ollama auto-install step.")
+    parser.add_argument("--skip-launchers", action="store_true", help="Skip installing command launchers into ~/.local/bin.")
     parser.add_argument("--ollama-version", default=None, help="Optional Ollama version for the official installer script.")
     parser.add_argument("--no-ollama-start", action="store_true", help="Do not auto-start Ollama during installation on supported platforms.")
     parser.add_argument("--no-upgrade-pip", action="store_true", help="Do not upgrade pip before installing requirements.")
@@ -156,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Ollama ready: {ollama_path}")
     else:
         _step("Skipping Ollama auto-install")
+
+    if not args.skip_launchers:
+        installed = install_cli_launchers()
+        print(f"Commands ready: {', '.join(str(path.name) for path in installed)}")
+    else:
+        _step("Skipping CLI launcher install")
 
     _step("Installation complete")
     print("Project dependencies are ready.")

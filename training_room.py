@@ -24,6 +24,29 @@ if __name__ == "__main__":
 LAB_AGENT_TAG = "lab_subject"
 TRAINING_ROOM_TAG = "training_room"
 ROOM_BRAINS_DIR = "room_brains"
+DEFAULT_ROOM_AGENT_ID = "agent_1"
+
+
+def _room_only_agent_lineup(agent_id: Optional[str]) -> list[dict[str, str]]:
+    target_id = str(agent_id or DEFAULT_ROOM_AGENT_ID).strip() or DEFAULT_ROOM_AGENT_ID
+    primary_spec = {
+        "id": target_id,
+        "name": "Agent 1" if target_id == "agent_1" else target_id,
+        "persona": (
+            "Ты Agent 1. Первый агент лаборатории CSEN. "
+            "Комната Морфеуса для тебя безопасная учебная среда. "
+            "Ты внимательно воспринимаешь указания оператора и используешь их для обучения."
+        ),
+    }
+    fallback_specs = [
+        {"id": "a2", "name": "Nova", "persona": "Ты Nova. Смелая исследовательница. Действуешь решительно, но не рискуешь зря."},
+        {"id": "agent_0", "name": "A0", "persona": "scout/explorer"},
+    ]
+    lineup = [primary_spec]
+    for spec in fallback_specs:
+        if str(spec.get("id", "")) != target_id:
+            lineup.append(spec)
+    return lineup
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -688,6 +711,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
         def __init__(self):
             self._runtime_options = dict(runtime_options or {})
             self._room_only_world_size = (30.0, 30.0)
+            self._room_only_agent_id = str(self._runtime_options.get("room_agent_id") or DEFAULT_ROOM_AGENT_ID or "").strip() or DEFAULT_ROOM_AGENT_ID
             self._ollama_enabled = bool(self._runtime_options.get("auto_ollama")) and not bool(self._runtime_options.get("no_ollama"))
             self._ollama_interval_ms = max(1000, int(self._runtime_options.get("ollama_interval_ms") or 3600))
             self._ollama_interval_ticks = max(12, int(round(float(self._ollama_interval_ms) / 16.0)))
@@ -723,6 +747,9 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self._setup_ollama_console()
             self._setup_ollama_training()
             self.statusBar().showMessage("Morpheus room ready", 1800)
+
+        def _initial_agent_lineup(self) -> list[dict[str, str]]:
+            return _room_only_agent_lineup(getattr(self, "_room_only_agent_id", DEFAULT_ROOM_AGENT_ID))
 
         def _help_text_for_current_mode(self) -> str:
             if hasattr(self, "view3d") and self.view3d.is_first_person_mode():
@@ -803,7 +830,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             config.WORLD_HEIGHT = target_h
             self._resize_world_if_needed(world, target_w, target_h)
 
-            preferred_id = self._training_room_agent_id()
+            preferred_id = self._training_room_agent_id() or getattr(self, "_room_only_agent_id", None)
             keep_id = room.attach_world(world, preferred_agent_id=preferred_id, announce=announce)
             if not keep_id:
                 return
