@@ -140,6 +140,13 @@ SHOWCASE_WORLD_WIDTH = 180.0
 SHOWCASE_WORLD_HEIGHT = 180.0
 SHOWCASE_SAFE_HAVENS = 8
 SHOWCASE_ENV_SEED = 2026
+VIEW_FRAME_INTERVAL_MS = 16
+TRAINER_TICK_INTERVAL_MS = 24
+SNAPSHOT_PUSH_INTERVAL_MS = 24
+OVERLAY_RELAYOUT_INTERVAL_MS = 33
+ENGINE_CHAT_TAIL = 120
+ENGINE_EVENT_TAIL = 120
+ENGINE_GLOBAL_EVENT_TAIL = 60
 
 
 # =====================================================
@@ -316,6 +323,7 @@ class MiniMapWidget(QtWidgets.QWidget):
         self.shared = shared
         self._player_provider = None
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
         self.setFixedSize(180, 180)
         self.setToolTip("Mini-map: click to center camera")
         self._bg = QtGui.QColor(20, 24, 32, 180)
@@ -424,14 +432,39 @@ class WorldMapOverlay(QtWidgets.QWidget):
         super().__init__(parent)
         self.shared = shared
         self._player_provider = None
+        self._background_cache_key = None
+        self._background_cache = None
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.hide()
 
     def set_player_provider(self, provider):
         self._player_provider = provider
         self.update()
+
+    def _zone_cache_signature(self) -> Tuple[Any, ...]:
+        zones = list(getattr(getattr(self.shared.engine, "world", None), "zones", []) or [])
+        signature = []
+        for zone in zones:
+            signature.append((
+                str(getattr(zone, "obj_id", "") or ""),
+                str(getattr(zone, "kind", "") or ""),
+                round(float(getattr(zone, "x", 0.0)), 2),
+                round(float(getattr(zone, "z", 0.0)), 2),
+                round(float(getattr(zone, "radius", 0.0)), 2),
+            ))
+        return tuple(signature)
+
+    def _invalidate_background_cache(self):
+        self._background_cache_key = None
+        self._background_cache = None
+
+    def resizeEvent(self, event: QtGui.QResizeEvent):
+        self._invalidate_background_cache()
+        return super().resizeEvent(event)
 
     def show_map(self):
         self.show()
@@ -478,80 +511,108 @@ class WorldMapOverlay(QtWidgets.QWidget):
         ty = max(0.0, min(1.0, (pos.y() - rect.top()) / max(1.0, rect.height())))
         return tx * ww, ty * wh
 
+    def _paint_cached_background(self, painter: QtGui.QPainter) -> QtCore.QRectF:
+        key = (
+            int(self.width()),
+            int(self.height()),
+            int(round(float(self.shared.world_w))),
+            int(round(float(self.shared.world_h))),
+            self._zone_cache_signature(),
+        )
+        if self._background_cache_key != key or self._background_cache is None:
+            pixmap = QtGui.QPixmap(self.size())
+            pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+            p = QtGui.QPainter(pixmap)
+            p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            p.fillRect(self.rect(), QtGui.QColor(6, 10, 16, 228))
+
+            outer = self.rect().adjusted(18, 18, -18, -18)
+            panel_path = QtGui.QPainterPath()
+            panel_path.addRoundedRect(QtCore.QRectF(outer), 26.0, 26.0)
+            panel_grad = QtGui.QLinearGradient(outer.topLeft(), outer.bottomRight())
+            panel_grad.setColorAt(0.0, QtGui.QColor(12, 18, 28, 242))
+            panel_grad.setColorAt(1.0, QtGui.QColor(7, 11, 18, 242))
+            p.fillPath(panel_path, panel_grad)
+            p.setPen(QtGui.QPen(QtGui.QColor(82, 112, 158, 180), 1.2))
+            p.drawPath(panel_path)
+
+            title_font = p.font()
+            title_font.setPointSize(15)
+            title_font.setWeight(QtGui.QFont.DemiBold)
+            p.setFont(title_font)
+            p.setPen(QtGui.QColor(236, 244, 255))
+            title_rect = QtCore.QRectF(outer.left() + 20, outer.top() + 14, outer.width() - 40, 26)
+            p.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, "Карта мира")
+
+            meta_font = p.font()
+            meta_font.setPointSize(10)
+            meta_font.setWeight(QtGui.QFont.Medium)
+            p.setFont(meta_font)
+            p.setPen(QtGui.QColor(170, 190, 214))
+            world_meta = f"{self.shared.world_w:.0f} x {self.shared.world_h:.0f}  |  ЛКМ — перейти  |  Esc / M — закрыть"
+            p.drawText(QtCore.QRectF(outer.left() + 20, outer.top() + 42, outer.width() - 40, 20), Qt.AlignLeft | Qt.AlignVCenter, world_meta)
+
+            map_rect = self._map_rect()
+            map_path = QtGui.QPainterPath()
+            map_path.addRoundedRect(map_rect, 18.0, 18.0)
+            p.fillPath(map_path, QtGui.QColor(16, 24, 34, 242))
+            p.setPen(QtGui.QPen(QtGui.QColor(62, 88, 118, 210), 1.1))
+            p.drawPath(map_path)
+
+            clip_path = QtGui.QPainterPath()
+            clip_path.addRoundedRect(map_rect.adjusted(1, 1, -1, -1), 17.0, 17.0)
+            p.save()
+            p.setClipPath(clip_path)
+            for i in range(1, 8):
+                x = map_rect.left() + map_rect.width() * (i / 8.0)
+                y = map_rect.top() + map_rect.height() * (i / 8.0)
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 22), 1.0))
+                p.drawLine(QtCore.QPointF(x, map_rect.top()), QtCore.QPointF(x, map_rect.bottom()))
+                p.drawLine(QtCore.QPointF(map_rect.left(), y), QtCore.QPointF(map_rect.right(), y))
+
+            for zone in list(getattr(getattr(self.shared.engine, "world", None), "zones", []) or []):
+                kind = str(getattr(zone, "kind", "") or "")
+                obj_id = str(getattr(zone, "obj_id", "") or "")
+                if "training_room" in obj_id:
+                    fill = QtGui.QColor(92, 18, 18, 78)
+                    stroke = QtGui.QColor(138, 248, 196, 168)
+                elif kind == "safe":
+                    fill = QtGui.QColor(74, 210, 184, 58)
+                    stroke = QtGui.QColor(108, 245, 210, 132)
+                elif kind == "hazard":
+                    fill = QtGui.QColor(255, 106, 106, 54)
+                    stroke = QtGui.QColor(255, 148, 120, 138)
+                else:
+                    fill = QtGui.QColor(120, 140, 190, 26)
+                    stroke = QtGui.QColor(146, 166, 214, 84)
+                center = self._world_to_screen(map_rect, float(getattr(zone, "x", 0.0)), float(getattr(zone, "z", 0.0)))
+                radius = (float(getattr(zone, "radius", 1.0)) / max(1.0, float(self.shared.world_w))) * map_rect.width()
+                radius = max(4.0, radius)
+                p.setPen(QtGui.QPen(stroke, 1.0))
+                p.setBrush(fill)
+                p.drawEllipse(center, radius, radius)
+            p.restore()
+
+            footer = QtCore.QRectF(outer.left() + 20, outer.bottom() - 28, outer.width() - 40, 18)
+            p.setPen(QtGui.QColor(162, 180, 201))
+            p.drawText(footer, Qt.AlignLeft | Qt.AlignVCenter, "Белые точки — выбранные, зелёно-мятные — лабораторный агент, зелёный маркер — игрок, оранжевые — животные")
+            p.end()
+            self._background_cache = pixmap
+            self._background_cache_key = key
+        painter.drawPixmap(0, 0, self._background_cache)
+        return self._map_rect()
+
     def paintEvent(self, _event: QtGui.QPaintEvent):
         if not self.isVisible():
             return
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QtGui.QColor(6, 10, 16, 228))
+        map_rect = self._paint_cached_background(p)
 
-        outer = self.rect().adjusted(18, 18, -18, -18)
-        panel_path = QtGui.QPainterPath()
-        panel_path.addRoundedRect(QtCore.QRectF(outer), 26.0, 26.0)
-        panel_grad = QtGui.QLinearGradient(outer.topLeft(), outer.bottomRight())
-        panel_grad.setColorAt(0.0, QtGui.QColor(12, 18, 28, 242))
-        panel_grad.setColorAt(1.0, QtGui.QColor(7, 11, 18, 242))
-        p.fillPath(panel_path, panel_grad)
-        p.setPen(QtGui.QPen(QtGui.QColor(82, 112, 158, 180), 1.2))
-        p.drawPath(panel_path)
-
-        title_font = p.font()
-        title_font.setPointSize(15)
-        title_font.setWeight(QtGui.QFont.DemiBold)
-        p.setFont(title_font)
-        p.setPen(QtGui.QColor(236, 244, 255))
-        title_rect = QtCore.QRectF(outer.left() + 20, outer.top() + 14, outer.width() - 40, 26)
-        p.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, "Карта мира")
-
-        meta_font = p.font()
-        meta_font.setPointSize(10)
-        meta_font.setWeight(QtGui.QFont.Medium)
-        p.setFont(meta_font)
-        p.setPen(QtGui.QColor(170, 190, 214))
-        world_meta = f"{self.shared.world_w:.0f} x {self.shared.world_h:.0f}  |  ЛКМ — перейти  |  Esc / M — закрыть"
-        p.drawText(QtCore.QRectF(outer.left() + 20, outer.top() + 42, outer.width() - 40, 20), Qt.AlignLeft | Qt.AlignVCenter, world_meta)
-
-        map_rect = self._map_rect()
-        map_path = QtGui.QPainterPath()
-        map_path.addRoundedRect(map_rect, 18.0, 18.0)
-        p.fillPath(map_path, QtGui.QColor(16, 24, 34, 242))
-        p.setPen(QtGui.QPen(QtGui.QColor(62, 88, 118, 210), 1.1))
-        p.drawPath(map_path)
-
+        p.save()
         clip_path = QtGui.QPainterPath()
         clip_path.addRoundedRect(map_rect.adjusted(1, 1, -1, -1), 17.0, 17.0)
-        p.save()
         p.setClipPath(clip_path)
-
-        for i in range(1, 8):
-            x = map_rect.left() + map_rect.width() * (i / 8.0)
-            y = map_rect.top() + map_rect.height() * (i / 8.0)
-            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 22), 1.0))
-            p.drawLine(QtCore.QPointF(x, map_rect.top()), QtCore.QPointF(x, map_rect.bottom()))
-            p.drawLine(QtCore.QPointF(map_rect.left(), y), QtCore.QPointF(map_rect.right(), y))
-
-        for zone in list(getattr(getattr(self.shared.engine, "world", None), "zones", []) or []):
-            kind = str(getattr(zone, "kind", "") or "")
-            obj_id = str(getattr(zone, "obj_id", "") or "")
-            if "training_room" in obj_id:
-                fill = QtGui.QColor(92, 18, 18, 78)
-                stroke = QtGui.QColor(138, 248, 196, 168)
-            elif kind == "safe":
-                fill = QtGui.QColor(74, 210, 184, 58)
-                stroke = QtGui.QColor(108, 245, 210, 132)
-            elif kind == "hazard":
-                fill = QtGui.QColor(255, 106, 106, 54)
-                stroke = QtGui.QColor(255, 148, 120, 138)
-            else:
-                fill = QtGui.QColor(120, 140, 190, 26)
-                stroke = QtGui.QColor(146, 166, 214, 84)
-            center = self._world_to_screen(map_rect, float(getattr(zone, "x", 0.0)), float(getattr(zone, "z", 0.0)))
-            radius = (float(getattr(zone, "radius", 1.0)) / max(1.0, float(self.shared.world_w))) * map_rect.width()
-            radius = max(4.0, radius)
-            p.setPen(QtGui.QPen(stroke, 1.0))
-            p.setBrush(fill)
-            p.drawEllipse(center, radius, radius)
-
         selected_id = self.shared.get_selected_agent_id()
         for aid, ent in list(getattr(self.shared.engine, "agents", {}).items()):
             center = self._world_to_screen(map_rect, float(getattr(ent.transform.pos, "x", 0.0)), float(getattr(ent.transform.pos, "z", 0.0)))
@@ -595,10 +656,6 @@ class WorldMapOverlay(QtWidgets.QWidget):
             p.drawLine(center, QtCore.QPointF(center.x() + dx, center.y() + dy))
 
         p.restore()
-
-        footer = QtCore.QRectF(outer.left() + 20, outer.bottom() - 28, outer.width() - 40, 18)
-        p.setPen(QtGui.QColor(162, 180, 201))
-        p.drawText(footer, Qt.AlignLeft | Qt.AlignVCenter, "Белые точки — выбранные, зелёно-мятные — лабораторный агент, зелёный маркер — игрок, оранжевые — животные")
 
     def mousePressEvent(self, e: QtGui.QMouseEvent):
         if e.button() not in (Qt.LeftButton, Qt.RightButton):
@@ -759,7 +816,7 @@ class World3DView(QOpenGLWidget):
         self.shared = shared
         self.engine = shared.engine
         self._player_drive_callback = player_drive_callback
-        self.shared.updated.connect(self.update)
+        self.shared.updated.connect(self._on_shared_updated)
 
         self.center_x = 50.0
         self.center_z = 50.0
@@ -811,13 +868,15 @@ class World3DView(QOpenGLWidget):
 
         self._timer = QTimer(self)
         self._timer.setTimerType(QtCore.Qt.PreciseTimer)
-        self._timer.setInterval(16)
+        self._timer.setInterval(VIEW_FRAME_INTERVAL_MS)
         self._timer.timeout.connect(self._frame_tick)
         self._timer.start()
         self._last_frame_time = QtCore.QElapsedTimer()
         self._last_frame_time.start()
 
         self._fps_smooth = 0.0
+        self._scene_dirty = True
+        self._idle_repaint_accum = 0.0
         platform_name = str(QtGui.QGuiApplication.platformName() or "").strip().lower()
         self._qt_platform_name = platform_name
         self._supports_native_pointer_grab = platform_name in {"xcb", "windows", "cocoa"}
@@ -825,6 +884,10 @@ class World3DView(QOpenGLWidget):
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
+
+    @Slot()
+    def _on_shared_updated(self):
+        self._scene_dirty = True
 
     def is_first_person_mode(self) -> bool:
         return self._camera_mode == "first_person"
@@ -1466,7 +1529,14 @@ class World3DView(QOpenGLWidget):
             self.engine.update(dt)
             self._update_first_person(dt)
         finally:
-            self.update()
+            repaint_now = self._scene_dirty or self.is_first_person_mode()
+            if not repaint_now:
+                self._idle_repaint_accum += max(0.0, dt)
+                repaint_now = self._idle_repaint_accum >= 0.05
+            if repaint_now:
+                self._scene_dirty = False
+                self._idle_repaint_accum = 0.0
+                self.update()
             if dt > 0:
                 fps = 1.0/dt
                 self._fps_smooth = 0.9*self._fps_smooth + 0.1*fps if self._fps_smooth else fps
@@ -1690,7 +1760,7 @@ class TrainerToEngineBridge(QtCore.QObject):
         self._snapshot_timer = QtCore.QTimer(self)
         self._snapshot_timer.setSingleShot(True)
         self._snapshot_timer.setTimerType(QtCore.Qt.PreciseTimer)
-        self._snapshot_timer.setInterval(16)
+        self._snapshot_timer.setInterval(SNAPSHOT_PUSH_INTERVAL_MS)
         self._snapshot_timer.timeout.connect(self._flush_snapshot_push)
         self.trainer.world_changed.connect(self._schedule_snapshot_push)
 
@@ -1714,7 +1784,11 @@ class TrainerToEngineBridge(QtCore.QObject):
         world = self.trainer.world
         if world is None:
             return
-        snap = _build_engine_snapshot(world, tick=self.trainer.monitor.tick)
+        snap = _build_engine_snapshot(
+            world,
+            tick=self.trainer.monitor.tick,
+            selected_agent_id=self.shared.get_selected_agent_id(),
+        )
         self.shared.update_from_snapshot(snap)
 
 
@@ -1926,6 +2000,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self._frame3d: Optional[QtWidgets.QFrame] = None
         self._frame3d_layout: Optional[QtWidgets.QVBoxLayout] = None
         self._overlay_relayout_pending = False
+        self._overlay_relayout_timer: Optional[QtCore.QTimer] = None
         self._trainer_tick_error: Optional[str] = None
 
         # Глобальный шрифт
@@ -2010,7 +2085,8 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
             if hasattr(self, "world_map_overlay"):
                 self.world_map_overlay.setGeometry(central.rect())
             # help — под HUD или в верхнем левом углу
-            self.help_overlay.adjustSize()
+            help_size = self.help_overlay.sizeHint()
+            self.help_overlay.resize(help_size)
             help_y = self.hud_overlay.geometry().bottom() + 8 if self.hud_overlay.isVisible() else r.y() + 14
             self.help_overlay.move(r.x()+14, help_y)
             # minimap — правый нижний
@@ -2045,6 +2121,8 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
 
         # 5) сплиттер: Stats | 3D | Brain
         self.splitter = QtWidgets.QSplitter(Qt.Horizontal)
+        self.splitter.setOpaqueResize(False)
+        self.splitter.setChildrenCollapsible(False)
         self.splitter.addWidget(self.stats_card)
         self.splitter.addWidget(frame3d)
         self.splitter.addWidget(self.brain_card)
@@ -2065,6 +2143,11 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         self.world_map_overlay.set_player_provider(self.view3d.get_minimap_player_marker)
         self.world_map_overlay.clickedWorld.connect(self._center_to)
         self.world_map_overlay.closed.connect(self._on_world_map_closed)
+        self._overlay_relayout_timer = QtCore.QTimer(self)
+        self._overlay_relayout_timer.setSingleShot(True)
+        self._overlay_relayout_timer.setTimerType(QtCore.Qt.CoarseTimer)
+        self._overlay_relayout_timer.setInterval(OVERLAY_RELAYOUT_INTERVAL_MS)
+        self._overlay_relayout_timer.timeout.connect(self._flush_overlay_relayout)
         central.installEventFilter(self)
         QtWidgets.QApplication.instance().installEventFilter(self)
 
@@ -2088,7 +2171,7 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         # 8.1) Основной тик симуляции мира и мозга агента.
         self._trainer_timer = QtCore.QTimer(self)
         self._trainer_timer.setTimerType(QtCore.Qt.PreciseTimer)
-        self._trainer_timer.setInterval(16)
+        self._trainer_timer.setInterval(TRAINER_TICK_INTERVAL_MS)
         self._trainer_timer.timeout.connect(self._on_trainer_tick)
         self._trainer_timer.start()
 
@@ -2124,10 +2207,14 @@ class CombinedMainWindow(QtWidgets.QMainWindow):
         return super().eventFilter(obj, ev)
 
     def _schedule_overlay_relayout(self):
-        if self._overlay_relayout_pending or not hasattr(self, "_place_overlays"):
+        if not hasattr(self, "_place_overlays"):
             return
         self._overlay_relayout_pending = True
-        QtCore.QTimer.singleShot(0, self._flush_overlay_relayout)
+        timer = getattr(self, "_overlay_relayout_timer", None)
+        if timer is None:
+            QtCore.QTimer.singleShot(OVERLAY_RELAYOUT_INTERVAL_MS, self._flush_overlay_relayout)
+            return
+        timer.start()
 
     @Slot()
     def _flush_overlay_relayout(self):
@@ -3167,7 +3254,7 @@ def _memory_to_dict(ev) -> Dict[str, Any]:
     except Exception:
         return {}
 
-def _brain_to_dict(brain) -> Dict[str, Any]:
+def _brain_to_dict(brain, *, detailed: bool = True) -> Dict[str, Any]:
     if brain is None:
         return {}
     if isinstance(brain, dict):
@@ -3193,18 +3280,19 @@ def _brain_to_dict(brain) -> Dict[str, Any]:
             if isinstance(v, (int, float, str, bool)):
                 rules[k] = v
     beliefs = []
-    try:
-        beliefs_src = data.get("beliefs", getattr(brain, "beliefs", [])) if not isinstance(brain, dict) else data.get("beliefs", [])
-        for b in list(beliefs_src or [])[-60:]:
-            beliefs.append(_belief_to_dict(b))
-    except Exception:
-        pass
     mem_tail = []
-    try:
-        mem_src = data.get("memory_tail", getattr(brain, "memory_tail", [])) if not isinstance(brain, dict) else data.get("memory_tail", [])
-        mem_tail = [_memory_to_dict(ev) for ev in list(mem_src or [])[-40:]]
-    except Exception:
-        pass
+    if detailed:
+        try:
+            beliefs_src = data.get("beliefs", getattr(brain, "beliefs", [])) if not isinstance(brain, dict) else data.get("beliefs", [])
+            for b in list(beliefs_src or [])[-24:]:
+                beliefs.append(_belief_to_dict(b))
+        except Exception:
+            pass
+        try:
+            mem_src = data.get("memory_tail", getattr(brain, "memory_tail", [])) if not isinstance(brain, dict) else data.get("memory_tail", [])
+            mem_tail = [_memory_to_dict(ev) for ev in list(mem_src or [])[-16:]]
+        except Exception:
+            pass
     return {
         "current_drive": data.get("current_drive", getattr(brain, "current_drive", None) if not isinstance(brain, dict) else None),
         "survival_score": data.get("survival_score", getattr(brain, "survival_score", None) if not isinstance(brain, dict) else None),
@@ -3213,7 +3301,18 @@ def _brain_to_dict(brain) -> Dict[str, Any]:
         "memory_tail": mem_tail,
     }
 
-def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
+
+def _trim_agent_payload_for_engine(row: Dict[str, Any], *, detailed: bool) -> Dict[str, Any]:
+    packed = dict(row)
+    packed["mind"] = _brain_to_dict(row.get("mind") or row.get("consciousness"), detailed=detailed)
+    if detailed and "memory_tail" in packed:
+        packed["memory_tail"] = [_memory_to_dict(ev) for ev in list(packed.get("memory_tail", []) or [])[-16:]]
+    else:
+        packed.pop("memory_tail", None)
+    packed.pop("consciousness", None)
+    return packed
+
+def _build_engine_snapshot(world, *, tick: int, selected_agent_id: Optional[str] = None) -> Dict[str, Any]:
     if hasattr(world, "snapshot") and callable(getattr(world, "snapshot")):
         try:
             snap = dict(world.snapshot() or {})
@@ -3231,18 +3330,18 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
                     chat_src = world.chat
                 else:
                     chat_src = []
-            snap["chat"] = [str(x) for x in list(chat_src)[-200:]]
+            snap["chat"] = [str(x) for x in list(chat_src)[-ENGINE_CHAT_TAIL:]]
 
             events_src = snap.get("events")
             if not isinstance(events_src, list):
                 events_src = list(getattr(world, "event_log", []) or getattr(world, "events", []) or [])
-            snap["events"] = list(events_src)[-200:]
+            snap["events"] = list(events_src)[-ENGINE_EVENT_TAIL:]
 
             if not snap.get("global_events"):
                 snap["global_events"] = [
                     f"[t={ev.get('tick', snap['tick'])}] {ev.get('type', 'event')}: "
                     f"{ev.get('name') or ev.get('who') or ev.get('victim_name') or ev.get('target') or ''}".rstrip(": ")
-                    for ev in snap["events"][-100:]
+                    for ev in snap["events"][-ENGINE_GLOBAL_EVENT_TAIL:]
                 ]
 
             agents_norm: List[Dict[str, Any]] = []
@@ -3250,9 +3349,8 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
                 if not isinstance(ag, dict):
                     continue
                 row = dict(ag)
-                row["mind"] = _brain_to_dict(row.get("mind") or row.get("consciousness"))
-                if "memory_tail" in row:
-                    row["memory_tail"] = [_memory_to_dict(ev) for ev in list(row.get("memory_tail", []) or [])[-40:]]
+                is_selected = bool(selected_agent_id) and str(row.get("id", "")) == str(selected_agent_id)
+                row = _trim_agent_payload_for_engine(row, detailed=is_selected)
                 try:
                     energy = float(row.get("energy", 100.0))
                     if energy <= 1.5:
@@ -3289,7 +3387,10 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
             "alive": bool(getattr(ag, "is_alive", lambda: True)()),
             "cause_of_death": getattr(ag, "cause_of_death", None),
             "tags": list(getattr(ag, "tags", []) or []),
-            "mind": _brain_to_dict(brain),
+            "mind": _brain_to_dict(
+                brain,
+                detailed=(bool(selected_agent_id) and str(getattr(ag, "id", "")) == str(selected_agent_id)),
+            ),
         })
 
     objects_pack: List[Dict[str, Any]] = []
@@ -3319,9 +3420,9 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
 
     chat_lines: List[str] = []
     if hasattr(world, "chat") and isinstance(world.chat, list):
-        chat_lines = [str(x) for x in world.chat[-200:]]
+        chat_lines = [str(x) for x in world.chat[-ENGINE_CHAT_TAIL:]]
     elif hasattr(world, "chat_log") and isinstance(world.chat_log, list):
-        chat_lines = [str(x) for x in world.chat_log[-200:]]
+        chat_lines = [str(x) for x in world.chat_log[-ENGINE_CHAT_TAIL:]]
 
     snap: Dict[str, Any] = {
         "tick": int(tick),
@@ -3331,12 +3432,12 @@ def _build_engine_snapshot(world, *, tick: int) -> Dict[str, Any]:
         "objects": objects_pack,
         "animals": animals_pack,
         "chat": chat_lines,
-        "events": list(getattr(world, "event_log", []) or [])[-200:],
+        "events": list(getattr(world, "event_log", []) or [])[-ENGINE_EVENT_TAIL:],
     }
     snap["global_events"] = [
         f"[t={ev.get('tick', tick)}] {ev.get('type', 'event')}: "
         f"{ev.get('name') or ev.get('who') or ev.get('victim_name') or ev.get('target') or ''}".rstrip(": ")
-        for ev in snap["events"][-100:]
+        for ev in snap["events"][-ENGINE_GLOBAL_EVENT_TAIL:]
     ]
     return snap
 

@@ -19,9 +19,13 @@ OLLAMA_WINDOWS_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 USER_BIN_DIR = Path.home() / ".local" / "bin"
 LAUNCHER_SOURCE = ROOT / "run_ollama_brain_lab"
 TRAIN_AGENT_SOURCE = ROOT / "train_agent_brain"
+COMBAT_DOJO_SOURCE = ROOT / "train_combat_dojo"
+TRAIN_COMBAT_SOURCE = ROOT / "train_agent_combat"
 LAUNCHER_LINKS = (
     (LAUNCHER_SOURCE, ("run_ollama_brain_lab", "csen_brain_lab")),
     (TRAIN_AGENT_SOURCE, ("train_agent_brain", "csen_train_agent_brain")),
+    (COMBAT_DOJO_SOURCE, ("train_combat_dojo", "csen_combat_dojo")),
+    (TRAIN_COMBAT_SOURCE, ("train_agent_combat", "csen_train_agent_combat")),
 )
 
 

@@ -1781,6 +1781,7 @@ def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
 
 LAB_AGENT_TAG = "lab_subject"
 TRAINING_ROOM_TAG = "training_room"
+MORPHEUS_MENTOR_TAG = "morpheus_mentor"
 
 
 def _agent_public_tags(agent: AgentEntity) -> List[str]:
@@ -1816,6 +1817,16 @@ def _draw_agent_special_markers(agent: AgentEntity, t: float) -> None:
             rgb=(0.98, 1.0, 0.70),
             width=1.2,
             alpha=0.44 + 0.16 * pulse,
+        )
+    if MORPHEUS_MENTOR_TAG in tags:
+        _draw_ring(
+            px,
+            pz,
+            radius=1.52 + pulse * 0.12,
+            y=0.08,
+            rgb=(0.96, 0.72, 0.22),
+            width=1.8,
+            alpha=0.40 + 0.16 * pulse,
         )
 
 def draw_agent_humanoid(agent: AgentEntity, t: float):
@@ -2232,6 +2243,8 @@ class MiniMatrixEngine:
         self._cam_pos: Tuple[float, float, float] = (0.0, 20.0, -20.0)
         self._cam_look: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         self.hidden_agent_ids: set[str] = set()
+        self._frame_dt_smooth: float = 1.0 / 60.0
+        self._render_quality: str = "high"
 
         # HUD / текст
         self._hud_text_enabled = HUD_SHOW_TEXT and _HAS_GLUT
@@ -2257,6 +2270,29 @@ class MiniMatrixEngine:
         dz = z - cz
         return dx * dx + dz * dz
 
+    def _update_quality_profile(self, dt: float) -> None:
+        alpha = 0.12
+        self._frame_dt_smooth = self._frame_dt_smooth * (1.0 - alpha) + float(dt) * alpha
+        if self._frame_dt_smooth >= (1.0 / 26.0):
+            self._render_quality = "performance"
+        elif self._frame_dt_smooth >= (1.0 / 42.0):
+            self._render_quality = "balanced"
+        else:
+            self._render_quality = "high"
+
+    def _lod_distance_scale(self) -> float:
+        if self._render_quality == "performance":
+            return 0.70
+        if self._render_quality == "balanced":
+            return 0.84
+        return 1.0
+
+    def _show_secondary_gizmos(self) -> bool:
+        return self._render_quality != "performance"
+
+    def _show_full_hud_for(self, selected: bool) -> bool:
+        return bool(selected) or self._render_quality != "performance"
+
     def _within_render_lod(self, x: float, z: float, max_distance: float, force: bool = False) -> bool:
         if force or max_distance <= 0.0:
             return True
@@ -2276,15 +2312,16 @@ class MiniMatrixEngine:
         return max(1.0, scale_r * kind_scale)
 
     def _collect_render_lists(self):
+        dist_scale = self._lod_distance_scale()
         visible_static: List[StaticMeshInstance] = []
         for inst in self.static_meshes:
-            lod_distance = MAX_STATIC_DISTANCE + self._static_mesh_radius(inst)
+            lod_distance = MAX_STATIC_DISTANCE * dist_scale + self._static_mesh_radius(inst)
             if self._within_render_lod(inst.pos.x, inst.pos.z, lod_distance):
                 visible_static.append(inst)
 
         visible_zones: List[ZoneObject] = []
         for zone in self.world.zones:
-            if self._within_render_lod(zone.x, zone.z, MAX_ZONE_DISTANCE + zone.radius):
+            if self._within_render_lod(zone.x, zone.z, MAX_ZONE_DISTANCE * dist_scale + zone.radius):
                 visible_zones.append(zone)
 
         visible_agents: List[AgentEntity] = []
@@ -2295,10 +2332,10 @@ class MiniMatrixEngine:
             force = agent.selected
             px = agent.transform.pos.x
             pz = agent.transform.pos.z
-            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE, force=force):
+            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE * dist_scale, force=force):
                 continue
             visible_agents.append(agent)
-            if self._within_render_lod(px, pz, MAX_AGENT_DETAIL_DISTANCE, force=force):
+            if self._within_render_lod(px, pz, MAX_AGENT_DETAIL_DISTANCE * dist_scale, force=force):
                 detailed_agent_ids.add(agent.agent_id)
 
         visible_animals: List[AnimalEntity] = []
@@ -2307,10 +2344,10 @@ class MiniMatrixEngine:
             force = animal.selected
             px = animal.transform.pos.x
             pz = animal.transform.pos.z
-            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE, force=force):
+            if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE * dist_scale, force=force):
                 continue
             visible_animals.append(animal)
-            if self._within_render_lod(px, pz, MAX_ANIMAL_DETAIL_DISTANCE, force=force):
+            if self._within_render_lod(px, pz, MAX_ANIMAL_DETAIL_DISTANCE * dist_scale, force=force):
                 detailed_animal_ids.add(animal.animal_id)
 
         return visible_static, visible_zones, visible_agents, detailed_agent_ids, visible_animals, detailed_animal_ids
@@ -2525,7 +2562,7 @@ class MiniMatrixEngine:
                 ent.anim.fear = fear
 
                 # числа урона/хила
-                if SHOW_DAMAGE_NUMBERS and self._hud_text_enabled:
+                if SHOW_DAMAGE_NUMBERS and self._hud_text_enabled and self._show_secondary_gizmos():
                     if abs(hp - ent.anim.prev_hp) >= 0.5:
                         delta = hp - ent.anim.prev_hp
                         col = (0.2, 1.0, 0.3, 1.0) if delta > 0 else (1.0, 0.25, 0.25, 1.0)
@@ -2633,7 +2670,7 @@ class MiniMatrixEngine:
                 ent_an.brain.desired_dir = desired_dir
 
                 # числа урона/хила
-                if SHOW_DAMAGE_NUMBERS and self._hud_text_enabled:
+                if SHOW_DAMAGE_NUMBERS and self._hud_text_enabled and self._show_secondary_gizmos():
                     if abs(hp_an - ent_an.anim.prev_hp) >= 0.5:
                         delta = hp_an - ent_an.anim.prev_hp
                         col = (0.2, 1.0, 0.3, 1.0) if delta > 0 else (1.0, 0.25, 0.25, 1.0)
@@ -2997,6 +3034,7 @@ class MiniMatrixEngine:
             return
 
         self._time_accum += dt
+        self._update_quality_profile(dt)
         self._update_sun_state(dt)
 
         self._smooth_positions_towards_targets(dt)
@@ -3248,6 +3286,8 @@ class MiniMatrixEngine:
             visible_animals,
             detailed_animal_ids,
         ) = self._collect_render_lists()
+        show_secondary_gizmos = self._show_secondary_gizmos()
+        goal_ring_distance = MAX_GOAL_RING_DISTANCE * self._lod_distance_scale()
 
         # окружение
         for inst in visible_static:
@@ -3262,7 +3302,7 @@ class MiniMatrixEngine:
 
         # цели агентов (кольца)
         for agent in visible_agents:
-            if not self._within_render_lod(agent.goal.x, agent.goal.z, MAX_GOAL_RING_DISTANCE, force=agent.selected):
+            if not self._within_render_lod(agent.goal.x, agent.goal.z, goal_ring_distance, force=agent.selected):
                 continue
             _draw_ring(
                 agent.goal.x,
@@ -3274,9 +3314,10 @@ class MiniMatrixEngine:
             )
 
         # вспомогательные гизмы
-        self._draw_target_lines(visible_agents=visible_agents, visible_animals=visible_animals)
-        for agent in visible_agents:
-            self._draw_agent_fov(agent)
+        if show_secondary_gizmos:
+            self._draw_target_lines(visible_agents=visible_agents, visible_animals=visible_animals)
+            for agent in visible_agents:
+                self._draw_agent_fov(agent)
 
         # агенты
         for agent in visible_agents:
@@ -3291,7 +3332,8 @@ class MiniMatrixEngine:
                 force=agent.selected,
             ):
                 draw_agent_direction_arrow(agent)
-            self._draw_agent_hud(agent)
+            if self._show_full_hud_for(agent.selected):
+                self._draw_agent_hud(agent)
 
         # звери
         for animal in visible_animals:
@@ -3306,7 +3348,8 @@ class MiniMatrixEngine:
                 force=animal.selected,
             ):
                 draw_animal_direction_arrow(animal)
-            self._draw_animal_hud(animal)
+            if self._show_full_hud_for(animal.selected):
+                self._draw_animal_hud(animal)
 
         # эффекты
         self._draw_vfx()

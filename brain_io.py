@@ -86,7 +86,13 @@ def _read_json_file(path: str) -> Optional[Dict[str, Any]]:
 
 
 def _write_json_file_atomic(path: str, payload: Dict[str, Any]) -> None:
-    tmp_path = path + ".tmp"
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+    except Exception as e:
+        print(f"{_LOG_PREFIX} WARN: can't ensure parent dir for {path}: {e}")
+    tmp_path = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)

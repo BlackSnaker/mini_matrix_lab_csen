@@ -6,6 +6,7 @@ import math
 import random
 import sys
 
+from animals import Animal as AnimalSim, AnimalSpecies
 from brain_io import export_room_brain
 from ollama_coach import (
     CoachAdvice,
@@ -15,7 +16,7 @@ from ollama_coach import (
     build_training_snapshot,
     infer_operator_goal,
 )
-from world import WorldObject
+from world import Agent, WorldObject
 
 if __name__ == "__main__":
     sys.modules.setdefault("training_room", sys.modules[__name__])
@@ -23,8 +24,14 @@ if __name__ == "__main__":
 
 LAB_AGENT_TAG = "lab_subject"
 TRAINING_ROOM_TAG = "training_room"
+MORPHEUS_MENTOR_TAG = "morpheus_mentor"
 ROOM_BRAINS_DIR = "room_brains"
 DEFAULT_ROOM_AGENT_ID = "agent_1"
+DEFAULT_MORPHEUS_AGENT_ID = "morpheus_mentor"
+DEFAULT_TRAINING_WOLF_ID = "training_wolf"
+LESSON_IDLE = "idle"
+LESSON_SPARRING = "sparring"
+LESSON_WOLF = "wolf_drill"
 
 
 def _room_only_agent_lineup(agent_id: Optional[str]) -> list[dict[str, str]]:
@@ -69,6 +76,36 @@ def _iter_animals(world: Any) -> Iterable[Any]:
     if isinstance(animals, (list, tuple, set)):
         return list(animals)
     return []
+
+
+def _is_alive_agent(agent: Any) -> bool:
+    if agent is None:
+        return False
+    try:
+        alive_fn = getattr(agent, "is_alive", None)
+        if callable(alive_fn):
+            return bool(alive_fn())
+    except Exception:
+        pass
+    try:
+        return bool(getattr(agent, "alive", True)) and float(getattr(agent, "health", 1.0)) > 0.0
+    except Exception:
+        return True
+
+
+def _is_alive_animal(animal: Any) -> bool:
+    if animal is None:
+        return False
+    try:
+        alive_fn = getattr(animal, "is_alive", None)
+        if callable(alive_fn):
+            return bool(alive_fn())
+    except Exception:
+        pass
+    try:
+        return float(getattr(animal, "hp", 1.0)) > 0.0
+    except Exception:
+        return True
 
 
 def _pct_add(value: Any, delta_pct: float) -> float:
@@ -157,9 +194,18 @@ class TrainingRoomManager:
         self.autosave_ticks = max(1, int(autosave_ticks))
         self._last_room_brain_save_tick: int = -10**9
         self._last_room_brain_path: Optional[str] = None
+        self.combat_lessons_enabled: bool = False
+        self.lesson_mode: str = LESSON_IDLE
+        self.mentor_agent_id: str = DEFAULT_MORPHEUS_AGENT_ID
+        self.training_wolf_id: str = DEFAULT_TRAINING_WOLF_ID
+        self._last_lesson_tick: int = -10**9
+        self._wolf_taming_prev_allow: Optional[bool] = None
 
     def is_lab_agent(self, agent_id: Optional[str]) -> bool:
         return bool(agent_id) and str(agent_id) == str(self.agent_id or "")
+
+    def is_mentor_agent(self, agent_id: Optional[str]) -> bool:
+        return bool(agent_id) and str(agent_id) == str(self.mentor_agent_id or "")
 
     def is_confined(self, agent_id: Optional[str]) -> bool:
         return self.is_lab_agent(agent_id) and not self.released
@@ -183,6 +229,56 @@ class TrainingRoomManager:
 
     def last_room_brain_path(self) -> Optional[str]:
         return self._last_room_brain_path
+
+    def enable_combat_lessons(self, enabled: bool = True) -> None:
+        self.combat_lessons_enabled = bool(enabled)
+        if not self.combat_lessons_enabled:
+            self.lesson_mode = LESSON_IDLE
+
+    def start_sparring(self, world: Any, *, announce: bool = True) -> str:
+        self.enable_combat_lessons(True)
+        self.lesson_mode = LESSON_SPARRING
+        self._ensure_combat_mentor(world, announce=announce)
+        self._remove_training_wolf(world)
+        self._position_combat_entities(world, sparring=True)
+        if announce:
+            self._announce(world, "[dojo] Морфеус начинает спарринг-урок. Учись держать дистанцию и отвечать на удар.")
+        return self.lesson_mode
+
+    def start_wolf_drill(self, world: Any, *, announce: bool = True) -> str:
+        self.enable_combat_lessons(True)
+        self.lesson_mode = LESSON_WOLF
+        self._ensure_combat_mentor(world, announce=False)
+        self._ensure_training_wolf(world, announce=announce)
+        self._position_combat_entities(world, sparring=False)
+        if announce:
+            self._announce(world, "[dojo] Морфеус выпускает тренировочного волка. Покажи ответ на атаку и удержи бой.")
+        return self.lesson_mode
+
+    def stop_combat_lesson(self, world: Any, *, announce: bool = True) -> str:
+        self.lesson_mode = LESSON_IDLE
+        self._remove_training_wolf(world)
+        self._position_combat_entities(world, sparring=False, reset_only=True)
+        self._apply_wolf_taming_policy(world)
+        if announce:
+            self._announce(world, "[dojo] Боевой урок остановлен. Комната вернулась в спокойный режим.")
+        return self.lesson_mode
+
+    def combat_status(self, world: Any) -> Dict[str, Any]:
+        lab = self._get_agent(world, self.agent_id)
+        mentor = self._get_agent(world, self.mentor_agent_id)
+        wolf = self._get_training_wolf(world)
+        return {
+            "enabled": bool(self.combat_lessons_enabled),
+            "lesson_mode": str(self.lesson_mode or LESSON_IDLE),
+            "lab_agent_id": str(self.agent_id or ""),
+            "mentor_present": bool(mentor is not None and _is_alive_agent(mentor)),
+            "wolf_present": bool(wolf is not None and _is_alive_animal(wolf)),
+            "lab_combat_skill": round(float(getattr(lab, "combat_skill", 0.0) or 0.0), 3) if lab is not None else 0.0,
+            "lab_health": round(float(getattr(lab, "health", 0.0) or 0.0), 1) if lab is not None else 0.0,
+            "mentor_health": round(float(getattr(mentor, "health", 0.0) or 0.0), 1) if mentor is not None else 0.0,
+            "wolf_hp": round(float(getattr(wolf, "hp", 0.0) or 0.0), 1) if wolf is not None else 0.0,
+        }
 
     def release_point(self, world: Any) -> Tuple[float, float]:
         bounds = self.bounds_for(world)
@@ -239,6 +335,7 @@ class TrainingRoomManager:
     def release_agent(self, world: Any, *, announce: bool = True) -> Optional[str]:
         if world is None or not self.agent_id:
             return None
+        self.stop_combat_lesson(world, announce=False)
         agent = self._get_agent(world, self.agent_id)
         self.released = True
         self._sync_tags(world)
@@ -268,11 +365,15 @@ class TrainingRoomManager:
         if world is None:
             return
         self._ensure_room_object(world)
+        if self.combat_lessons_enabled:
+            self._ensure_combat_mentor(world, announce=False)
         self._sync_tags(world)
         self._expel_hazards(world)
         self._expel_animals(world)
         self._keep_other_agents_out(world)
+        self._apply_wolf_taming_policy(world)
         self._stabilize_room_agent(world)
+        self._maintain_combat_lesson(world)
         self._save_room_brain(world, reason="room_autosave", force=False)
 
     def _pick_default_agent_id(self, world: Any) -> Optional[str]:
@@ -280,7 +381,7 @@ class TrainingRoomManager:
             if agent is None:
                 continue
             agent_id = getattr(agent, "id", getattr(agent, "agent_id", None))
-            if agent_id:
+            if agent_id and str(agent_id) != str(self.mentor_agent_id):
                 return str(agent_id)
         return None
 
@@ -301,10 +402,338 @@ class TrainingRoomManager:
                 return agent
         return None
 
+    def _get_training_wolf(self, world: Any) -> Optional[Any]:
+        if world is None:
+            return None
+        animals = getattr(world, "animals", {}) or {}
+        if isinstance(animals, dict):
+            wolf = animals.get(self.training_wolf_id)
+            if wolf is not None:
+                return wolf
+        for animal in _iter_animals(world):
+            if animal is None:
+                continue
+            if str(getattr(animal, "uid", "")) == str(self.training_wolf_id):
+                return animal
+        return None
+
+    def _announce(self, world: Any, text: str) -> None:
+        if world is None:
+            return
+        if hasattr(world, "add_chat_line"):
+            try:
+                world.add_chat_line(str(text))
+            except Exception:
+                pass
+
+    def _combat_ring_positions(self, world: Any) -> Dict[str, Tuple[float, float]]:
+        bounds = self.bounds_for(world)
+        cx, cy = bounds.center
+        spar_offset = _clamp(bounds.width * 0.09, 1.3, 2.1)
+        wolf_offset = _clamp(bounds.width * 0.15, 2.2, 3.6)
+        mentor_idle_offset = _clamp(bounds.width * 0.22, 3.0, 5.2)
+        return {
+            "lab": (cx - spar_offset, cy + 0.20),
+            "mentor": (cx + spar_offset, cy - 0.20),
+            "wolf": (cx + wolf_offset * 0.20, cy + wolf_offset),
+            "mentor_idle": (cx + mentor_idle_offset, cy - max(2.4, bounds.height * 0.18)),
+        }
+
+    def _ensure_combat_mentor(self, world: Any, *, announce: bool) -> Optional[Any]:
+        if world is None or not self.combat_lessons_enabled:
+            return None
+        mentor = self._get_agent(world, self.mentor_agent_id)
+        if mentor is None:
+            spawn = self._combat_ring_positions(world)["mentor_idle"]
+            mentor = Agent(
+                agent_id=self.mentor_agent_id,
+                name="Morpheus",
+                x=float(spawn[0]),
+                y=float(spawn[1]),
+                goal_x=float(spawn[0]),
+                goal_y=float(spawn[1]),
+                persona=(
+                    "Ты Морфеус. Хладнокровный боевой наставник. "
+                    "Ты учишь агента держать стойку, отвечать на удар и не паниковать перед волком."
+                ),
+            )
+            try:
+                mentor.attack_power = 6.0
+                mentor.attack_range = max(1.7, float(getattr(mentor, "attack_range", 1.6)))
+                mentor.attack_cooldown = max(8, min(14, int(getattr(mentor, "attack_cooldown", 12))))
+                mentor.combat_skill = max(4.0, float(getattr(mentor, "combat_skill", 0.0)))
+                mentor.fear = 0.02
+                mentor.energy = _pct_add(getattr(mentor, "energy", 100.0), 0.0)
+            except Exception:
+                pass
+            try:
+                world.add_agent(mentor)
+            except Exception:
+                agents = getattr(world, "agents", None)
+                if isinstance(agents, dict):
+                    agents[self.mentor_agent_id] = mentor
+            if announce:
+                self._announce(world, "[dojo] Морфеус вошёл в комнату. Начинаем урок боя.")
+        return mentor
+
+    def _remove_training_wolf(self, world: Any) -> None:
+        if world is None:
+            return
+        animals = getattr(world, "animals", None)
+        if isinstance(animals, dict):
+            animals.pop(self.training_wolf_id, None)
+            return
+        if isinstance(animals, list):
+            world.animals = [a for a in animals if str(getattr(a, "uid", "")) != str(self.training_wolf_id)]
+
+    def _ensure_training_wolf(self, world: Any, *, announce: bool) -> Optional[Any]:
+        if world is None or not self.combat_lessons_enabled:
+            return None
+        wolf = self._get_training_wolf(world)
+        if wolf is None:
+            pos = self._combat_ring_positions(world)["wolf"]
+            species = AnimalSpecies(
+                "wolf",
+                "Тренировочный_волк",
+                42.0,
+                True,
+                False,
+                1.0,
+                5.0,
+                6.0,
+                2.0,
+                10.0,
+            )
+            wolf = AnimalSim(uid=self.training_wolf_id, species=species, x=float(pos[0]), y=float(pos[1]))
+            try:
+                wolf.vx = 0.0
+                wolf.vy = 0.0
+                wolf.last_action = "await_drill"
+            except Exception:
+                pass
+            try:
+                world.add_animal(wolf)
+            except Exception:
+                animals = getattr(world, "animals", None)
+                if isinstance(animals, dict):
+                    animals[self.training_wolf_id] = wolf
+            if announce:
+                self._announce(world, "[dojo] В комнату впущен тренировочный волк.")
+        return wolf
+
+    def _position_combat_entities(self, world: Any, *, sparring: bool, reset_only: bool = False) -> None:
+        if world is None:
+            return
+        spots = self._combat_ring_positions(world)
+        lab = self._get_agent(world, self.agent_id)
+        mentor = self._get_agent(world, self.mentor_agent_id)
+        wolf = self._get_training_wolf(world)
+        if lab is not None and not reset_only:
+            self._move_entity(lab, *spots["lab"], set_goal=True)
+        if mentor is not None:
+            key = "mentor" if sparring and not reset_only else "mentor_idle"
+            self._move_entity(mentor, *spots[key], set_goal=True)
+        if wolf is not None and not reset_only:
+            self._move_entity(wolf, *spots["wolf"], set_goal=False)
+
+    def _mentor_influence(self, world: Any, lab: Any, mentor: Any) -> None:
+        tick = self._world_tick(world)
+        if mentor is None or lab is None:
+            return
+        lx, ly = float(getattr(lab, "x", 0.0)), float(getattr(lab, "y", 0.0))
+        mx, my = float(getattr(mentor, "x", 0.0)), float(getattr(mentor, "y", 0.0))
+        dx, dy = mx - lx, my - ly
+        dist = math.hypot(dx, dy)
+        if dist > 2.2:
+            self._move_entity(mentor, lx - dx / max(dist, 1e-6) * 1.2, ly - dy / max(dist, 1e-6) * 1.2, set_goal=True)
+            try:
+                lab.set_goal(mx, my, world_size=(float(getattr(world, "width", 0.0)), float(getattr(world, "height", 0.0))), reason="dojo_spar", tick=tick)
+            except Exception:
+                pass
+
+    def _combat_feedback(self, agent: Any, *, hp_delta: float, dist_delta: float, done: bool = False) -> None:
+        brain = getattr(agent, "brain", None)
+        if brain is not None and hasattr(brain, "note_combat_feedback"):
+            try:
+                brain.note_combat_feedback(hp_delta=float(hp_delta), dist_delta=float(dist_delta), done=bool(done))
+            except Exception:
+                pass
+
+    def _apply_training_hit(self, world: Any, attacker: Any, defender: Any, *, damage: float, lesson: str) -> bool:
+        if attacker is None or defender is None:
+            return False
+        now = self._world_tick(world)
+        can_attack = getattr(attacker, "can_attack", None)
+        if callable(can_attack):
+            try:
+                if not bool(can_attack(now)):
+                    return False
+            except Exception:
+                pass
+        before_hp = float(getattr(defender, "health", 100.0))
+        dmg = float(max(0.5, damage))
+        hp_floor = 22.0 if self.lesson_mode == LESSON_SPARRING else 30.0
+        max_dmg = max(0.0, before_hp - hp_floor)
+        if max_dmg <= 0.0:
+            return False
+        dmg = min(dmg, max_dmg)
+        if dmg <= 0.0:
+            return False
+        try:
+            defender.receive_damage(dmg, attacker_id=str(getattr(attacker, "id", getattr(attacker, "uid", "dojo"))), world_tick=now)
+        except Exception:
+            try:
+                defender.health = max(hp_floor, before_hp - dmg)
+            except Exception:
+                return False
+        mark_attack = getattr(attacker, "mark_attack", None)
+        if callable(mark_attack):
+            try:
+                mark_attack(now)
+            except Exception:
+                pass
+        try:
+            attacker.combat_skill = min(5.0, float(getattr(attacker, "combat_skill", 0.0)) + 0.03)
+        except Exception:
+            pass
+        self._combat_feedback(attacker, hp_delta=0.0, dist_delta=-0.6, done=False)
+        self._combat_feedback(defender, hp_delta=-dmg, dist_delta=0.0, done=False)
+        if hasattr(world, "add_event"):
+            try:
+                world.add_event({
+                    "type": "dojo_hit",
+                    "lesson": lesson,
+                    "tick": now,
+                    "who": getattr(attacker, "name", getattr(attacker, "id", "mentor")),
+                    "target": getattr(defender, "name", getattr(defender, "id", "agent")),
+                    "damage": round(dmg, 2),
+                })
+            except Exception:
+                pass
+        return True
+
+    def _run_sparring_lesson(self, world: Any, lab: Any, mentor: Any) -> None:
+        if lab is None or mentor is None:
+            return
+        self._mentor_influence(world, lab, mentor)
+        lx, ly = float(getattr(lab, "x", 0.0)), float(getattr(lab, "y", 0.0))
+        mx, my = float(getattr(mentor, "x", 0.0)), float(getattr(mentor, "y", 0.0))
+        dist = math.hypot(mx - lx, my - ly)
+        if dist > 2.4:
+            self._position_combat_entities(world, sparring=True)
+            lx, ly = float(getattr(lab, "x", 0.0)), float(getattr(lab, "y", 0.0))
+            mx, my = float(getattr(mentor, "x", 0.0)), float(getattr(mentor, "y", 0.0))
+            dist = math.hypot(mx - lx, my - ly)
+        if dist > 1.9:
+            return
+        mentor_hit = self._apply_training_hit(world, mentor, lab, damage=3.6, lesson=LESSON_SPARRING)
+        if mentor_hit:
+            try:
+                lab.combat_skill = min(5.0, float(getattr(lab, "combat_skill", 0.0)) + 0.025)
+            except Exception:
+                pass
+        confidence = max(0.0, min(1.0, float(getattr(lab, "combat_skill", 0.0)) / 5.0))
+        if confidence >= 0.10:
+            hit_back = self._apply_training_hit(world, lab, mentor, damage=2.8 + confidence * 1.8, lesson=LESSON_SPARRING)
+            if hit_back:
+                try:
+                    lab.fear = _clamp(float(getattr(lab, "fear", 0.0)) - 0.035, 0.0, 1.0)
+                except Exception:
+                    pass
+
+    def _run_wolf_lesson(self, world: Any, lab: Any, mentor: Any) -> None:
+        wolf = self._ensure_training_wolf(world, announce=False)
+        if lab is None or wolf is None:
+            return
+        if mentor is not None:
+            self._move_entity(mentor, *self._combat_ring_positions(world)["mentor_idle"], set_goal=True)
+        try:
+            wolf.aggression_target = str(getattr(lab, "id", self.agent_id))
+            wolf.last_action = f"drill_target:{getattr(lab, 'id', self.agent_id)}"
+        except Exception:
+            pass
+        wx = float(getattr(wolf, "x", 0.0))
+        wy = float(getattr(wolf, "y", 0.0))
+        try:
+            lab.set_goal(wx, wy, world_size=(float(getattr(world, "width", 0.0)), float(getattr(world, "height", 0.0))), reason="wolf_drill", tick=self._world_tick(world))
+        except Exception:
+            pass
+        if not _is_alive_animal(wolf):
+            self._announce(world, "[dojo] Волк повержен. Морфеус запускает новый заход.")
+            self._remove_training_wolf(world)
+            self._ensure_training_wolf(world, announce=False)
+
+    def _stabilize_combat_actor(self, actor: Any, *, min_health: float, target_fear: float) -> None:
+        if actor is None:
+            return
+        try:
+            actor.health = max(float(min_health), float(getattr(actor, "health", 100.0)))
+        except Exception:
+            pass
+        try:
+            actor.energy = _pct_add(getattr(actor, "energy", 100.0), 0.35)
+        except Exception:
+            pass
+        try:
+            actor.fear = _clamp(min(float(getattr(actor, "fear", 0.0)), float(target_fear)), 0.0, 1.0)
+        except Exception:
+            pass
+
+    def _apply_wolf_taming_policy(self, world: Any) -> None:
+        if world is None:
+            return
+        taming = getattr(world, "wolf_taming", None)
+        if taming is None or not hasattr(taming, "allow_tame_wolves"):
+            return
+        if self.combat_lessons_enabled and self.lesson_mode == LESSON_WOLF and not self.released:
+            if self._wolf_taming_prev_allow is None:
+                try:
+                    self._wolf_taming_prev_allow = bool(getattr(taming, "allow_tame_wolves", True))
+                except Exception:
+                    self._wolf_taming_prev_allow = True
+            try:
+                taming.allow_tame_wolves = False
+            except Exception:
+                pass
+            return
+        if self._wolf_taming_prev_allow is not None:
+            try:
+                taming.allow_tame_wolves = bool(self._wolf_taming_prev_allow)
+            except Exception:
+                pass
+            self._wolf_taming_prev_allow = None
+
+    def _maintain_combat_lesson(self, world: Any) -> None:
+        if world is None or not self.combat_lessons_enabled or self.released:
+            return
+        tick = self._world_tick(world)
+        if tick == self._last_lesson_tick:
+            return
+        self._last_lesson_tick = tick
+
+        mentor = self._ensure_combat_mentor(world, announce=False)
+        lab = self._get_agent(world, self.agent_id)
+        if lab is None or mentor is None:
+            return
+
+        self._stabilize_combat_actor(lab, min_health=34.0, target_fear=0.42 if self.lesson_mode == LESSON_WOLF else 0.32)
+        self._stabilize_combat_actor(mentor, min_health=48.0, target_fear=0.12)
+        if self.lesson_mode == LESSON_SPARRING:
+            self._remove_training_wolf(world)
+            self._run_sparring_lesson(world, lab, mentor)
+        elif self.lesson_mode == LESSON_WOLF:
+            self._run_wolf_lesson(world, lab, mentor)
+
     def _set_tags(self, agent: Any, *, is_lab: bool, confined: bool) -> None:
-        tags = [str(t) for t in list(getattr(agent, "tags", []) or []) if str(t) not in (LAB_AGENT_TAG, TRAINING_ROOM_TAG)]
+        tags = [
+            str(t)
+            for t in list(getattr(agent, "tags", []) or [])
+            if str(t) not in (LAB_AGENT_TAG, TRAINING_ROOM_TAG, MORPHEUS_MENTOR_TAG)
+        ]
         if is_lab:
             tags.append(LAB_AGENT_TAG)
+        if self.is_mentor_agent(getattr(agent, "id", getattr(agent, "agent_id", None))):
+            tags.append(MORPHEUS_MENTOR_TAG)
         if confined:
             tags.append(TRAINING_ROOM_TAG)
         try:
@@ -474,6 +903,8 @@ class TrainingRoomManager:
         for ani in _iter_animals(world):
             if ani is None:
                 continue
+            if self.lesson_mode == LESSON_WOLF and str(getattr(ani, "uid", "")) == str(self.training_wolf_id):
+                continue
             ax = float(getattr(ani, "x", 0.0))
             ay = float(getattr(ani, "y", 0.0))
             if not bounds.contains_point(ax, ay, margin=2.5):
@@ -494,6 +925,8 @@ class TrainingRoomManager:
                 continue
             agent_id = str(getattr(agent, "id", getattr(agent, "agent_id", "")) or "")
             if self.is_confined(agent_id):
+                continue
+            if self.is_mentor_agent(agent_id):
                 continue
             ax = float(getattr(agent, "x", 0.0))
             ay = float(getattr(agent, "y", 0.0))
@@ -525,7 +958,8 @@ class TrainingRoomManager:
             except Exception:
                 pass
         try:
-            agent.health = _clamp(float(getattr(agent, "health", 100.0)) + 0.08, 0.0, 100.0)
+            heal_rate = 0.04 if self.lesson_mode in (LESSON_SPARRING, LESSON_WOLF) else 0.08
+            agent.health = _clamp(float(getattr(agent, "health", 100.0)) + heal_rate, 0.0, 100.0)
         except Exception:
             pass
         try:
@@ -537,13 +971,15 @@ class TrainingRoomManager:
         except Exception:
             pass
         try:
-            agent.fear = _clamp(float(getattr(agent, "fear", 0.0)) - 0.012, 0.0, 1.0)
+            fear_delta = 0.004 if self.lesson_mode in (LESSON_SPARRING, LESSON_WOLF) else 0.012
+            agent.fear = _clamp(float(getattr(agent, "fear", 0.0)) - fear_delta, 0.0, 1.0)
         except Exception:
             pass
-        try:
-            agent.last_attacker_id = None
-        except Exception:
-            pass
+        if self.lesson_mode == LESSON_IDLE:
+            try:
+                agent.last_attacker_id = None
+            except Exception:
+                pass
 
     def _world_tick(self, world: Any) -> int:
         for attr in ("tick_count", "ticks", "time", "tick"):
@@ -718,6 +1154,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self._ollama_model_override = self._runtime_options.get("ollama_model")
             self._ollama_host_override = self._runtime_options.get("ollama_host")
             self._ollama_status_label: Optional[QtWidgets.QLabel] = None
+            self._combat_status_label: Optional[QtWidgets.QLabel] = None
             self._ollama_console_dock: Optional[QtWidgets.QDockWidget] = None
             self._ollama_console_view: Optional[QtWidgets.QPlainTextEdit] = None
             self._ollama_input: Optional[QtWidgets.QPlainTextEdit] = None
@@ -732,6 +1169,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self.trainer.disaster_interval_ticks = 0
             self.trainer.relief_after_disaster = 0
             self._apply_room_only_world(announce=False)
+            self._enable_room_combat_lessons(announce=False)
             if hasattr(self, "_combat_timer"):
                 self._combat_timer.stop()
             self._combat_paused = True
@@ -746,6 +1184,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self._ensure_training_room_selection()
             self._setup_ollama_console()
             self._setup_ollama_training()
+            self._start_morpheus_sparring(announce=False)
             self.statusBar().showMessage("Morpheus room ready", 1800)
 
         def _initial_agent_lineup(self) -> list[dict[str, str]]:
@@ -753,8 +1192,8 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
 
         def _help_text_for_current_mode(self) -> str:
             if hasattr(self, "view3d") and self.view3d.is_first_person_mode():
-                return "Комната Морфеуса: мышь — обзор • WASD/ЦФЫВ — вести агента по комнате • Shift — быстрее • Ctrl — точный шаг • E/У — выбрать цель • Ctrl+Shift+O — автокоуч • Ctrl+Shift+L — новый урок • Ctrl+Shift+I — фокус ввода Ollama • V/М или Esc — выход"
-            return "Комната Морфеуса: ЛКМ — выбрать • ПКМ — цель в комнате • RMB — орбита • колесо — зум • F/А — фокус • R/К — сброс • Ctrl+Shift+O — автокоуч • Ctrl+Shift+L — новый урок • Ctrl+Shift+I — панель указаний • V/М — first person"
+                return "Комната Морфеуса: мышь — обзор • WASD/ЦФЫВ — вести агента по комнате • Shift — быстрее • Ctrl — точный шаг • Ctrl+Shift+M — спарринг с Морфеусом • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — фокус ввода Ollama • V/М или Esc — выход"
+            return "Комната Морфеуса: ЛКМ — выбрать • ПКМ — цель в комнате • RMB — орбита • колесо — зум • F/А — фокус • R/К — сброс • Ctrl+Shift+M — спарринг • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — панель указаний • V/М — first person"
 
         def _make_toolbar(self):
             super()._make_toolbar()
@@ -781,6 +1220,30 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self.act_ollama_focus.triggered.connect(self._focus_ollama_input)
             self.addAction(self.act_ollama_focus)
             tb.addAction(self.act_ollama_focus)
+
+            tb.addSeparator()
+
+            self.act_sparring = QtGui.QAction("Morpheus Sparring (Ctrl+Shift+M)", self)
+            self.act_sparring.setShortcut("Ctrl+Shift+M")
+            self.act_sparring.triggered.connect(self._start_morpheus_sparring)
+            self.addAction(self.act_sparring)
+            tb.addAction(self.act_sparring)
+
+            self.act_wolf_drill = QtGui.QAction("Wolf Drill (Ctrl+Shift+W)", self)
+            self.act_wolf_drill.setShortcut("Ctrl+Shift+W")
+            self.act_wolf_drill.triggered.connect(self._start_wolf_drill)
+            self.addAction(self.act_wolf_drill)
+            tb.addAction(self.act_wolf_drill)
+
+            self.act_stop_lesson = QtGui.QAction("Stop Lesson (Ctrl+Shift+K)", self)
+            self.act_stop_lesson.setShortcut("Ctrl+Shift+K")
+            self.act_stop_lesson.triggered.connect(self._stop_room_combat_lesson)
+            self.addAction(self.act_stop_lesson)
+            tb.addAction(self.act_stop_lesson)
+
+            self._combat_status_label = QtWidgets.QLabel("Combat: idle")
+            self._combat_status_label.setStyleSheet("QLabel { color:#f0d98a; }")
+            tb.addWidget(self._combat_status_label)
 
             self._ollama_status_label = QtWidgets.QLabel("Ollama: pending")
             self._ollama_status_label.setStyleSheet("QLabel { color:#8be08b; }")
@@ -895,6 +1358,77 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
 
             if hasattr(self, "shared"):
                 self.shared.set_selected_agent(str(keep_id))
+
+        def _enable_room_combat_lessons(self, *, announce: bool) -> None:
+            room = self._training_room()
+            world = getattr(self.trainer, "world", None)
+            if room is None or world is None:
+                return
+            room.enable_combat_lessons(True)
+            room.maintain_world(world)
+            if announce:
+                self.statusBar().showMessage("Combat lessons enabled in Morpheus room", 1800)
+
+        def _refresh_room_combat_ui(self) -> None:
+            room = self._training_room()
+            world = getattr(self.trainer, "world", None)
+            label = self._combat_status_label
+            if room is None or world is None or label is None:
+                return
+            state = room.combat_status(world)
+            mode = str(state.get("lesson_mode") or LESSON_IDLE)
+            skill = float(state.get("lab_combat_skill", 0.0) or 0.0)
+            hp = float(state.get("lab_health", 0.0) or 0.0)
+            mentor = bool(state.get("mentor_present"))
+            wolf = bool(state.get("wolf_present"))
+            suffix = "mentor" if mentor else "no mentor"
+            if wolf:
+                suffix += " + wolf"
+            color = "#f0d98a"
+            if mode == LESSON_WOLF:
+                color = "#ffb06c"
+            elif mode == LESSON_IDLE:
+                color = "#a7b0c7"
+            label.setText(f"Combat: {mode} | skill {skill:.2f} | hp {hp:.0f} | {suffix}")
+            label.setStyleSheet(f"QLabel {{ color:{color}; }}")
+
+        @QtCore.Slot()
+        def _start_morpheus_sparring(self, *, announce: bool = True) -> None:
+            room = self._training_room()
+            world = getattr(self.trainer, "world", None)
+            if room is None or world is None:
+                return
+            room.enable_combat_lessons(True)
+            room.start_sparring(world, announce=announce)
+            self.bridge._push_snapshot()
+            self._refresh_room_combat_ui()
+            if announce:
+                self._toast("Morpheus sparring started")
+
+        @QtCore.Slot()
+        def _start_wolf_drill(self, *, announce: bool = True) -> None:
+            room = self._training_room()
+            world = getattr(self.trainer, "world", None)
+            if room is None or world is None:
+                return
+            room.enable_combat_lessons(True)
+            room.start_wolf_drill(world, announce=announce)
+            self.bridge._push_snapshot()
+            self._refresh_room_combat_ui()
+            if announce:
+                self._toast("Wolf drill started")
+
+        @QtCore.Slot()
+        def _stop_room_combat_lesson(self, *, announce: bool = True) -> None:
+            room = self._training_room()
+            world = getattr(self.trainer, "world", None)
+            if room is None or world is None:
+                return
+            room.stop_combat_lesson(world, announce=announce)
+            self.bridge._push_snapshot()
+            self._refresh_room_combat_ui()
+            if announce:
+                self._toast("Combat lesson stopped")
 
         def _ollama_service(self):
             return getattr(self.trainer, "ollama_brain_service", None)
@@ -1162,6 +1696,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             return f"[t={tick:04d}] {role}: {text}"
 
         def _refresh_ollama_ui(self) -> None:
+            self._refresh_room_combat_ui()
             state = self._brain_ollama_state()
             if not state:
                 self._set_ollama_status("Ollama: no brain", color="#a7b0c7")
@@ -1336,7 +1871,9 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             super()._on_trainer_epoch_changed()
             self._ollama_last_seen_log_seq = 0
             self._ollama_online_announced = False
+            self._enable_room_combat_lessons(announce=False)
             self._configure_ollama_brain(announce=False)
+            self._refresh_room_combat_ui()
             if self._ollama_enabled:
                 QtCore.QTimer.singleShot(500, self._request_ollama_lesson_now)
 

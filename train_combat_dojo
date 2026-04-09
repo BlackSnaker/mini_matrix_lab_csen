@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  TARGET="$(readlink "$SELF")"
+  if [[ "$TARGET" != /* ]]; then
+    SELF="$(cd "$(dirname "$SELF")" && cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
+  else
+    SELF="$TARGET"
+  fi
+done
+
+ROOT="$(cd "$(dirname "$SELF")" && pwd)"
+
+if [[ -x "$ROOT/venv/bin/python" ]]; then
+  PYTHON="$ROOT/venv/bin/python"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON="$ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON="$(command -v python)"
+else
+  echo "Python not found" >&2
+  exit 1
+fi
+
+exec "$PYTHON" "$ROOT/morpheus_dojo.py" "$@"

@@ -112,9 +112,11 @@ Inspector/HUD показывают эти данные live, в синхроне
 - Отдельный entry-point: [`training_room.py`](training_room.py).
 - Room-only режим: без полной карты мира, без боевых событий, без опасных условий и без посторонних агентов.
 - Один лабораторный агент с отдельной маркировкой и отдельным room-brain состоянием.
+- Боевой учебный контур в духе сцены Морфеуса и Нео: спарринг с Морфеусом и отдельный wolf drill внутри комнаты.
 - Прямое управление агентом из интерфейса через Ollama.
 - Сохранение отдельного мозга комнаты в [`room_brains/`](room_brains/) для последующего выпуска агента в общий мир.
 - Подтягивание контекста из brain-срезов и прошлых успешных команд для более точной интерпретации инструкций.
+- По умолчанию в комнате используется именно `agent_1`, чтобы обучать и выпускать в мир первого агента проекта.
 
 **Как запустить:**
 
@@ -122,6 +124,12 @@ Inspector/HUD показывают эти данные live, в синхроне
 python install.py
 python training_room.py --ollama-model=llama3.2:latest
 ```
+
+**Боевой режим в комнате:**
+
+- `Ctrl+Shift+M` — sparring с Морфеусом.
+- `Ctrl+Shift+W` — тренировочный wolf drill.
+- `Ctrl+Shift+K` — остановить боевой урок и вернуть комнату в спокойный режим.
 
 `install.py` ставит Python-зависимости проекта и, если `ollama` не найден в системе, запускает официальный инсталлятор Ollama автоматически.
 
@@ -133,6 +141,8 @@ python training_room.py --ollama-model=llama3.2:latest
 - Интерпретация и prompt-логика: [`ollama_coach.py`](ollama_coach.py)
 - Контекст по brain-срезам: [`ollama_behavior_context.py`](ollama_behavior_context.py)
 - Отдельные brain-сохранения комнаты: [`room_brains/`](room_brains/)
+- Терминальный dojo без 3D: [`morpheus_dojo.py`](morpheus_dojo.py)
+- One-command launcher боевой подготовки: [`train_agent_combat`](train_agent_combat)
 
 **Сценарий использования:**
 
@@ -156,6 +166,7 @@ python training_room.py --ollama-model=llama3.2:latest
 
 - `TrainingRoomManager` в [`training_room.py`](training_room.py): безопасная комната, изоляция одного агента, room-brain export, выпуск обратно в мир.
 - Room-only окно `MorpheusRoomWindow` в [`training_room.py`](training_room.py): отдельный запуск комнаты без полной карты мира.
+- Боевой Morpheus curriculum в [`training_room.py`](training_room.py): спарринг с наставником, учебный волк, нефатальные health floors, рост `combat_skill`, контроль боевых уроков из UI.
 - Хук [`CombinedMainWindow._initial_agent_lineup()`](combined_app.py): позволяет переопределять стартовый lineup и подменять `Echo` на `agent_1` для room-only режима.
 - `OllamaBrainService` в [`ollama_brain_service.py`](ollama_brain_service.py): очередь инструкций, authoritative override, structured actions, локальное исполнение простых команд и управление эмоциональным состоянием агента.
 - `OllamaCoach` в [`ollama_coach.py`](ollama_coach.py): интерпретация команд, prompt-building, structured `action`, `goal`, `belief`, `behavior`.
@@ -163,6 +174,9 @@ python training_room.py --ollama-model=llama3.2:latest
 - Профилировщик мозга [`ollama_brain_profile.py`](ollama_brain_profile.py): разрезание brain-state по слоям `identity / beliefs / memory / commands / dialogue / emotion`.
 - Launcher [`run_ollama_brain_lab`](run_ollama_brain_lab): one-file запуск полного процесса с проверкой Python, проекта и Ollama runtime.
 - Wrapper [`train_agent_brain`](train_agent_brain): одна команда для обучения Ollama на мозге `agent_1`.
+- Headless боевая утилита [`morpheus_dojo.py`](morpheus_dojo.py): терминальный live-dashboard для sparring/wolf drill без нагрузки на 3D-движок.
+- Wrapper [`train_combat_dojo`](train_combat_dojo): прямой запуск терминального dojo.
+- Wrapper [`train_agent_combat`](train_agent_combat): одна команда для циклического боевого обучения `agent_1` до mastery-порога.
 - Автоустановка Ollama в [`install.py`](install.py), если локальный runtime отсутствует.
 
 **Полное описание методов и сценариев:**
@@ -181,6 +195,14 @@ python training_room.py --ollama-model=llama3.2:latest
   - изменение температуры света (теплее на низком солнце, холоднее в верхней фазе).
 - Обновлённый sky clear color: фон кадра теперь синхронизирован с текущим состоянием солнца.
 - Усилена читаемость сцены: освещение пола/сетки и мешей теперь учитывает направление солнца.
+- Маркер Морфеуса в 3D для боевого режима комнаты.
+- Morpheus room получила отдельную постановку и распознаётся движком как специальная учебная зона.
+
+Также обновлено в `combined_app.py` и `engine3d.py`:
+
+- Разведены частоты UI, trainer tick и snapshot-push, чтобы 3D не дёргался при обновлении мозга и мира.
+- Добавлен adaptive quality в 3D: движок поджимает второстепенные gizmo/LOD при просадке FPS.
+- Оптимизирован resize-path интерфейса: debounced overlay relayout, cached world-map background и более лёгкий `QSplitter` без тяжёлого live-resize.
 
 Параметры для настройки:
 
@@ -230,6 +252,19 @@ python install.py --no-ollama-start
 python combined_app.py
 ```
 Если у вас другой entry-point — запустите соответствующий файл.
+
+**Терминальный боевой dojo без 3D:**
+```bash
+train_agent_combat
+```
+
+Полезные варианты:
+```bash
+train_agent_combat --lesson sparring --until-mastery --ticks 6000
+train_agent_combat --lesson wolf --until-mastery --ticks 6000
+train_agent_combat --mastery-skill 4.5 --mastery-mentor-hits 6 --mastery-wolf-hits 10
+train_agent_combat --plain
+```
 
 ---
 

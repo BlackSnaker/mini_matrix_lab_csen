@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  while [[ -L "$source_path" ]]; do
+    local source_dir
+    source_dir="$(cd "$(dirname "$source_path")" && pwd)"
+    source_path="$(readlink "$source_path")"
+    [[ "$source_path" != /* ]] && source_path="$source_dir/$source_path"
+  done
+  cd "$(dirname "$source_path")" && pwd
+}
+
+ROOT_DIR="$(resolve_script_path)"
+LAUNCHER="$ROOT_DIR/train_combat_dojo"
+DEFAULT_AGENT_ID="${CSEN_COMBAT_AGENT_ID:-agent_1}"
+DEFAULT_LESSON="${CSEN_COMBAT_LESSON:-cycle}"
+DEFAULT_TICKS="${CSEN_COMBAT_TICKS:-12000}"
+DEFAULT_SWITCH_EVERY="${CSEN_COMBAT_SWITCH_EVERY:-240}"
+DEFAULT_UI_INTERVAL="${CSEN_COMBAT_UI_INTERVAL:-0.12}"
+DEFAULT_SAVE_EVERY="${CSEN_COMBAT_SAVE_EVERY:-180}"
+DEFAULT_ROOM_AUTOSAVE="${CSEN_COMBAT_ROOM_AUTOSAVE:-120}"
+DEFAULT_UNTIL_MASTERY="${CSEN_COMBAT_UNTIL_MASTERY:-1}"
+DEFAULT_MASTERY_SKILL="${CSEN_COMBAT_MASTERY_SKILL:-5.0}"
+DEFAULT_MASTERY_MENTOR_HITS="${CSEN_COMBAT_MASTERY_MENTOR_HITS:-8}"
+DEFAULT_MASTERY_WOLF_HITS="${CSEN_COMBAT_MASTERY_WOLF_HITS:-12}"
+
+if [[ ! -x "$LAUNCHER" ]]; then
+  echo "Не найден launcher dojo: $LAUNCHER" >&2
+  exit 1
+fi
+
+print_help() {
+  cat <<EOF
+CSEN Agent Combat Training
+
+Одна команда для headless-обучения бою в комнате Морфеуса без 3D.
+
+По умолчанию:
+  agent-id:      $DEFAULT_AGENT_ID
+  lesson:        $DEFAULT_LESSON
+  ticks cap:     $DEFAULT_TICKS
+  switch-every:  $DEFAULT_SWITCH_EVERY
+  ui-interval:   $DEFAULT_UI_INTERVAL
+  save-every:    $DEFAULT_SAVE_EVERY
+  room-autosave: $DEFAULT_ROOM_AUTOSAVE
+  until-mastery: $DEFAULT_UNTIL_MASTERY
+  mastery-skill: $DEFAULT_MASTERY_SKILL
+  mentor-hits:   $DEFAULT_MASTERY_MENTOR_HITS
+  wolf-hits:     $DEFAULT_MASTERY_WOLF_HITS
+
+Запуск:
+  train_agent_combat
+
+Необязательно:
+  train_agent_combat --until-mastery --continuous
+  train_agent_combat --lesson sparring --until-mastery --ticks 6000
+  train_agent_combat --lesson wolf --until-mastery --ticks 6000
+  train_agent_combat --mastery-skill 4.5 --mastery-mentor-hits 6 --mastery-wolf-hits 10
+  train_agent_combat --plain
+  train_agent_combat --fresh-start
+
+Переменные окружения:
+  CSEN_COMBAT_AGENT_ID       переопределяет agent-id по умолчанию
+  CSEN_COMBAT_LESSON         переопределяет lesson по умолчанию
+  CSEN_COMBAT_TICKS          переопределяет hard cap тиков
+  CSEN_COMBAT_SWITCH_EVERY   переопределяет длину фазы cycle
+  CSEN_COMBAT_UI_INTERVAL    переопределяет частоту обновления терминала
+  CSEN_COMBAT_SAVE_EVERY     переопределяет интервал brain-save
+  CSEN_COMBAT_ROOM_AUTOSAVE  переопределяет room autosave
+  CSEN_COMBAT_UNTIL_MASTERY  включает mastery-режим по умолчанию
+  CSEN_COMBAT_MASTERY_SKILL  целевой combat_skill
+  CSEN_COMBAT_MASTERY_MENTOR_HITS  нужные контрудары по Морфеусу
+  CSEN_COMBAT_MASTERY_WOLF_HITS    нужные удары по волку
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    --help|-h)
+      print_help
+      exit 0
+      ;;
+  esac
+fi
+
+ARGS=("$@")
+if [[ $# -eq 0 ]]; then
+  ARGS=(
+    --agent-id "$DEFAULT_AGENT_ID"
+    --lesson "$DEFAULT_LESSON"
+    --ticks "$DEFAULT_TICKS"
+    --switch-every "$DEFAULT_SWITCH_EVERY"
+    --ui-interval "$DEFAULT_UI_INTERVAL"
+    --save-every "$DEFAULT_SAVE_EVERY"
+    --room-autosave "$DEFAULT_ROOM_AUTOSAVE"
+    --mastery-skill "$DEFAULT_MASTERY_SKILL"
+    --mastery-mentor-hits "$DEFAULT_MASTERY_MENTOR_HITS"
+    --mastery-wolf-hits "$DEFAULT_MASTERY_WOLF_HITS"
+  )
+  if [[ "$DEFAULT_UNTIL_MASTERY" != "0" ]]; then
+    ARGS+=(--until-mastery)
+  fi
+fi
+
+exec "$LAUNCHER" "${ARGS[@]}"
