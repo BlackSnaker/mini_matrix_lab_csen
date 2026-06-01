@@ -205,6 +205,8 @@ class OllamaBrainService:
             chunks.append(f"goal=({float(advice.goal[0]):.1f}, {float(advice.goal[1]):.1f})")
         if advice.lesson:
             chunks.append(f"lesson={str(advice.lesson)[:72]}")
+        if getattr(advice, "speech", ""):
+            chunks.append(f"speech={str(advice.speech)[:72]}")
         if advice.thought:
             chunks.append(f"thought={str(advice.thought)[:64]}")
         if advice.belief:
@@ -768,7 +770,10 @@ class OllamaBrainService:
         brain.ollama_active_reward_hint = float(result.get("reward_hint") or advice.reward_hint or 0.12)
         brain.ollama_active_command_source = str(command_source or "auto")
         brain.ollama_status = str(action_result.get("status") or ("guiding" if result.get("goal") is not None else "note"))
-        if brain.ollama_last_thought:
+        speech_text = str(result.get("speech") or getattr(advice, "speech", "") or "").strip()
+        if speech_text:
+            self._append_log(brain, "agent", speech_text, tick=tick)
+        elif brain.ollama_last_thought:
             brain.last_thought = brain.ollama_last_thought
             self._append_log(brain, "agent", brain.ollama_last_thought, tick=tick)
         goal = result.get("goal")

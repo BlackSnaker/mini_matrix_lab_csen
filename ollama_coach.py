@@ -52,6 +52,13 @@ def _pct(value: Any, default: float = 0.0) -> float:
     return _clamp(out, 0.0, 100.0)
 
 
+def _is_white_room(room: Any) -> bool:
+    room_id = str(getattr(room, "room_id", "") or "").casefold()
+    object_id = str(getattr(room, "object_id", "") or "").casefold()
+    label = str(getattr(room, "label", "") or "")
+    return "white_room" in room_id or "white_room" in object_id or "blank_room" in room_id or "Белая_комната" in label
+
+
 def _normalize_vec(x: float, y: float) -> Tuple[float, float]:
     n = math.hypot(float(x), float(y))
     if n <= 1e-6:
@@ -807,6 +814,7 @@ class CoachAdvice:
     behavior: Dict[str, Optional[float]]
     reward_hint: float
     raw: Dict[str, Any]
+    speech: str = ""
 
 
 def infer_operator_goal(snapshot: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -837,23 +845,33 @@ def build_training_snapshot(
 ) -> Dict[str, Any]:
     bounds = room.bounds_for(world)
     cx, cy = bounds.center
-    landmarks = {
-        "morpheus_chair": {
-            "x": round(bounds.left + bounds.width * 0.28, 2),
-            "y": round(bounds.top + bounds.height * 0.62, 2),
-        },
-        "neo_chair": {
-            "x": round(bounds.left + bounds.width * 0.72, 2),
-            "y": round(bounds.top + bounds.height * 0.62, 2),
-        },
-        "coffee_table": {"x": round(cx, 2), "y": round(bounds.top + bounds.height * 0.56, 2)},
-        "floor_center": {"x": round(cx, 2), "y": round(cy, 2)},
-        "green_panel": {"x": round(cx, 2), "y": round(bounds.top + bounds.height * 0.24, 2)},
-        "lamp": {
-            "x": round(bounds.left + bounds.width * 0.16, 2),
-            "y": round(bounds.top + bounds.height * 0.26, 2),
-        },
-    }
+    white_room = _is_white_room(room)
+    if white_room:
+        landmarks = {
+            "floor_center": {"x": round(cx, 2), "y": round(cy, 2)},
+            "north_wall": {"x": round(cx, 2), "y": round(bounds.top + 1.6, 2)},
+            "south_wall": {"x": round(cx, 2), "y": round(bounds.bottom - 1.6, 2)},
+            "west_wall": {"x": round(bounds.left + 1.6, 2), "y": round(cy, 2)},
+            "east_wall": {"x": round(bounds.right - 1.6, 2), "y": round(cy, 2)},
+        }
+    else:
+        landmarks = {
+            "morpheus_chair": {
+                "x": round(bounds.left + bounds.width * 0.28, 2),
+                "y": round(bounds.top + bounds.height * 0.62, 2),
+            },
+            "neo_chair": {
+                "x": round(bounds.left + bounds.width * 0.72, 2),
+                "y": round(bounds.top + bounds.height * 0.62, 2),
+            },
+            "coffee_table": {"x": round(cx, 2), "y": round(bounds.top + bounds.height * 0.56, 2)},
+            "floor_center": {"x": round(cx, 2), "y": round(cy, 2)},
+            "green_panel": {"x": round(cx, 2), "y": round(bounds.top + bounds.height * 0.24, 2)},
+            "lamp": {
+                "x": round(bounds.left + bounds.width * 0.16, 2),
+                "y": round(bounds.top + bounds.height * 0.26, 2),
+            },
+        }
     tools = _tool_specs(landmarks)
 
     brain = getattr(agent, "brain", None)
@@ -862,7 +880,7 @@ def build_training_snapshot(
     snapshot = {
         "tick": room_tick,
         "room": {
-            "theme": "morpheus_construct",
+            "theme": "blank_white_room" if white_room else "morpheus_construct",
             "safe": True,
             "bounds": {
                 "left": round(bounds.left, 2),
@@ -974,6 +992,7 @@ class OllamaCoach:
             data["_goal_source"] = "operator_relative"
         if action is not None:
             data["_action"] = action
+        speech = str(data.get("speech") or data.get("agent_speech") or data.get("reply") or "").strip()
         return CoachAdvice(
             model=str(raw.get("model") or self.model),
             thought=str(data.get("thought") or "").strip(),
@@ -983,6 +1002,7 @@ class OllamaCoach:
             behavior=self._sanitize_behavior(data.get("behavior")),
             reward_hint=_clamp(_safe_float(data.get("reward_hint", 0.12), 0.12), -1.0, 1.0),
             raw=data,
+            speech=speech,
         )
 
     def _sanitize_goal(self, goal_raw: Any, bounds: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -1120,6 +1140,14 @@ class OllamaCoach:
         brain_study = snapshot.get("brain_study", {}) or {}
         active_lesson = snapshot.get("active_lesson")
         operator_instruction = str(snapshot.get("operator_instruction") or "").strip()
+        room_theme = str(room.get("theme") or "")
+        white_room = room_theme == "blank_white_room"
+        room_rule = (
+            "Комната абсолютно пустая: только белые стены, белый пол и открытое пространство. "
+            "Не упоминай кресла, стол, лампу, панели и другой интерьер.\n"
+            if white_room
+            else "Фразы вида «сядь на стул/кресло» в этой комнате означают подойти к ближайшему креслу и остаться там.\n"
+        )
         operator_block = ""
         if operator_instruction:
             operator_block = (
@@ -1132,13 +1160,14 @@ class OllamaCoach:
             "Комната безопасна: здесь нет реальной угрозы, боли, боя, хищников и токсичных зон.\n"
             "Твоя задача: обучать агента спокойному перемещению, концентрации, закреплению полезных правил и осмысленному исследованию комнаты.\n"
             "Пиши мысль и урок только на русском языке, без английских слов и без Markdown.\n"
+            "Поле speech — это речь самого агента оператору от первого лица. Делай её осмысленной, связанной с вопросом и состоянием памяти.\n"
             "Если оператор просит шаги вперед, назад, влево или вправо, ориентируйся на agent.facing и agent.step_unit.\n"
             "Используй behavior_context.current_profile как психопрофиль текущего мозга.\n"
             "Если есть brain_study, считай его результатом длительного изучения полного мозга агента и используй как главный долгосрочный профиль характера, реакции на команды и эмоциональные рычаги.\n"
             "Если есть похожие command_examples, интерпретируй похожую команду тем же способом.\n"
             "Если есть style_priors из архивных мозгов, используй их как мягкие поведенческие priors, но не спорь с прямой командой оператора.\n"
             "Фразы вида «подойди ... и стой там» это не stop, а последовательность move_to_landmark -> wait.\n"
-            "Фразы вида «сядь на стул/кресло» в этой комнате означают подойти к ближайшему креслу и остаться там.\n"
+            f"{room_rule}"
             "Если оператор просит изменить настроение, уверенность, спокойствие, любопытство, энергию или фокус агента, используй action=tune_emotion.\n"
             "Если в command_examples уже есть успешная похожая команда, повторяй тот же action family и не импровизируй.\n"
             "Если запрос можно выразить как инструментальное действие, заполни поле action и выбери инструмент из tools.\n"
@@ -1149,6 +1178,7 @@ class OllamaCoach:
             "Строгая схема ответа:\n"
             "{\n"
             '  "thought": "короткая мысль агента на русском, до 12 слов",\n'
+            '  "speech": "осмысленная фраза агента оператору от первого лица, до 22 слов",\n'
             '  "lesson": "короткая команда тренера на русском, до 18 слов",\n'
             '  "action": {"name": "tool_name", "args": {...}} или null,\n'
             '  "goal": {"x": 0, "y": 0},\n'
@@ -1232,6 +1262,7 @@ def apply_advice_to_agent(
         "model": advice.model,
         "lesson": advice.lesson,
         "thought": advice.thought,
+        "speech": advice.speech,
         "reward_hint": advice.reward_hint,
     }
     if applied_goal is not None:
@@ -1262,7 +1293,8 @@ def apply_advice_to_agent(
             goal_text = ""
             if applied_goal is not None:
                 goal_text = f" -> ({applied_goal[0]:.1f}, {applied_goal[1]:.1f})"
-            world.add_chat_line(f"[ollama:{advice.model}] {name}: {advice.lesson}{goal_text}")
+            spoken_text = str(advice.speech or advice.lesson or "").strip()
+            world.add_chat_line(f"[agent:{advice.model}] {name}: {spoken_text}{goal_text}")
         except Exception:
             pass
     if hasattr(world, "add_event"):
@@ -1274,6 +1306,7 @@ def apply_advice_to_agent(
                 "agent_id": agent_id,
                 "model": advice.model,
                 "lesson": advice.lesson,
+                "speech": advice.speech,
             }
             if applied_goal is not None:
                 event["goal"] = {"x": round(applied_goal[0], 2), "y": round(applied_goal[1], 2)}
@@ -1285,6 +1318,7 @@ def apply_advice_to_agent(
         "goal": applied_goal,
         "lesson": advice.lesson,
         "thought": advice.thought,
+        "speech": advice.speech,
         "reward_hint": advice.reward_hint,
         "model": advice.model,
     }
