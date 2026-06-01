@@ -16,6 +16,12 @@ from ollama_coach import (
     build_training_snapshot,
     infer_operator_goal,
 )
+from lab_subject_selector import (
+    format_candidate_summary,
+    load_candidate_brain,
+    make_lab_subject_lineup_spec,
+    select_best_trained_agent,
+)
 from world import Agent, WorldObject
 
 if __name__ == "__main__":
@@ -1065,6 +1071,11 @@ def _parse_cli_options(args: Iterable[str]) -> Dict[str, Any]:
         "ollama_smoke": False,
         "no_ollama": False,
         "auto_ollama": False,
+        "best_agent": False,
+        "white_room": False,
+        "conversation_only": False,
+        "start_sparring": True,
+        "room_agent_id": None,
         "ollama_model": None,
         "ollama_host": None,
         "ollama_interval_ms": 3600,
@@ -1081,6 +1092,19 @@ def _parse_cli_options(args: Iterable[str]) -> Dict[str, Any]:
             options["no_ollama"] = True
         elif arg == "--auto-ollama":
             options["auto_ollama"] = True
+        elif arg == "--best-agent":
+            options["best_agent"] = True
+        elif arg in ("--white-room", "--blank-room"):
+            options["white_room"] = True
+        elif arg in ("--conversation-only", "--no-sparring"):
+            options["conversation_only"] = True
+            options["start_sparring"] = False
+        elif arg == "--start-sparring":
+            options["conversation_only"] = False
+            options["start_sparring"] = True
+        elif arg.startswith("--room-agent-id=") or arg.startswith("--agent-id="):
+            value = arg.split("=", 1)[1].strip()
+            options["room_agent_id"] = value or None
         elif arg.startswith("--ollama-model="):
             value = arg.split("=", 1)[1].strip()
             options["ollama_model"] = value or None
@@ -1147,7 +1171,19 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
         def __init__(self):
             self._runtime_options = dict(runtime_options or {})
             self._room_only_world_size = (30.0, 30.0)
-            self._room_only_agent_id = str(self._runtime_options.get("room_agent_id") or DEFAULT_ROOM_AGENT_ID or "").strip() or DEFAULT_ROOM_AGENT_ID
+            self._white_room = bool(self._runtime_options.get("white_room"))
+            self._conversation_only = bool(self._runtime_options.get("conversation_only"))
+            self._start_sparring_on_open = bool(self._runtime_options.get("start_sparring", True)) and not self._conversation_only
+            self._lab_subject_candidate = None
+            if bool(self._runtime_options.get("best_agent")):
+                self._lab_subject_candidate = select_best_trained_agent()
+            selected_candidate_id = getattr(self._lab_subject_candidate, "agent_id", None)
+            self._room_only_agent_id = str(
+                self._runtime_options.get("room_agent_id")
+                or selected_candidate_id
+                or DEFAULT_ROOM_AGENT_ID
+                or ""
+            ).strip() or DEFAULT_ROOM_AGENT_ID
             self._ollama_enabled = bool(self._runtime_options.get("auto_ollama")) and not bool(self._runtime_options.get("no_ollama"))
             self._ollama_interval_ms = max(1000, int(self._runtime_options.get("ollama_interval_ms") or 3600))
             self._ollama_interval_ticks = max(12, int(round(float(self._ollama_interval_ms) / 16.0)))
@@ -1165,11 +1201,13 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self._ollama_text_entry_locked = False
             self._ollama_locked_actions: list[tuple[Any, bool]] = []
             super().__init__()
-            self.setWindowTitle("Morpheus Room Lab")
+            self.setWindowTitle("White Room Lab" if self._white_room else "Morpheus Room Lab")
             self.trainer.disaster_interval_ticks = 0
             self.trainer.relief_after_disaster = 0
+            self._configure_room_only_manager()
             self._apply_room_only_world(announce=False)
-            self._enable_room_combat_lessons(announce=False)
+            if not self._conversation_only:
+                self._enable_room_combat_lessons(announce=False)
             if hasattr(self, "_combat_timer"):
                 self._combat_timer.stop()
             self._combat_paused = True
@@ -1184,16 +1222,28 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             self._ensure_training_room_selection()
             self._setup_ollama_console()
             self._setup_ollama_training()
-            self._start_morpheus_sparring(announce=False)
-            self.statusBar().showMessage("Morpheus room ready", 1800)
+            if self._start_sparring_on_open:
+                self._start_morpheus_sparring(announce=False)
+            else:
+                self._stop_room_combat_lesson(announce=False)
+            if self._lab_subject_candidate is not None and hasattr(self.trainer.world, "add_chat_line"):
+                try:
+                    self.trainer.world.add_chat_line(f"[lab] selected {format_candidate_summary(self._lab_subject_candidate)}")
+                except Exception:
+                    pass
+            self.statusBar().showMessage("White room ready" if self._white_room else "Morpheus room ready", 1800)
 
         def _initial_agent_lineup(self) -> list[dict[str, str]]:
+            candidate = getattr(self, "_lab_subject_candidate", None)
+            if candidate is not None:
+                return [make_lab_subject_lineup_spec(candidate)]
             return _room_only_agent_lineup(getattr(self, "_room_only_agent_id", DEFAULT_ROOM_AGENT_ID))
 
         def _help_text_for_current_mode(self) -> str:
+            room_name = "Белая комната" if getattr(self, "_white_room", False) else "Комната Морфеуса"
             if hasattr(self, "view3d") and self.view3d.is_first_person_mode():
-                return "Комната Морфеуса: мышь — обзор • WASD/ЦФЫВ — вести агента по комнате • Shift — быстрее • Ctrl — точный шаг • Ctrl+Shift+M — спарринг с Морфеусом • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — фокус ввода Ollama • V/М или Esc — выход"
-            return "Комната Морфеуса: ЛКМ — выбрать • ПКМ — цель в комнате • RMB — орбита • колесо — зум • F/А — фокус • R/К — сброс • Ctrl+Shift+M — спарринг • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — панель указаний • V/М — first person"
+                return f"{room_name}: мышь — обзор • WASD/ЦФЫВ — вести агента по комнате • Shift — быстрее • Ctrl — точный шаг • Ctrl+Shift+M — спарринг • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — фокус ввода Ollama • V/М или Esc — выход"
+            return f"{room_name}: ЛКМ — выбрать • ПКМ — цель в комнате • RMB — орбита • колесо — зум • F/А — фокус • R/К — сброс • Ctrl+Shift+M — спарринг • Ctrl+Shift+W — wolf drill • Ctrl+Shift+K — стоп урока • Ctrl+Shift+O — автокоуч • Ctrl+Shift+I — панель указаний • V/М — first person"
 
         def _make_toolbar(self):
             super()._make_toolbar()
@@ -1261,6 +1311,54 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
         def _release_training_room_agent(self):
             self._toast("Room-only mode: only Morpheus room is available")
 
+        def _configure_room_only_manager(self) -> None:
+            room = self._training_room()
+            if room is None:
+                return
+            if getattr(self, "_white_room", False):
+                room.room_id = "white_room"
+                room.label = "Белая_комната"
+                room.object_id = "white_room_zone"
+
+        def _apply_selected_lab_subject_brain(self, agent: Any) -> None:
+            candidate = getattr(self, "_lab_subject_candidate", None)
+            if candidate is None or agent is None:
+                return
+            if str(getattr(agent, "_lab_subject_source_path", "")) == str(candidate.path):
+                return
+            brain = load_candidate_brain(candidate, agent_id=getattr(agent, "id", candidate.agent_id))
+            if brain is None:
+                return
+            try:
+                if hasattr(brain, "set_persona"):
+                    brain.set_persona(getattr(agent, "persona", ""))
+                elif hasattr(brain, "persona"):
+                    setattr(brain, "persona", getattr(agent, "persona", ""))
+            except Exception:
+                pass
+            agent.brain = brain
+            try:
+                agent.health = float(max(1.0, min(100.0, getattr(brain, "health", getattr(agent, "health", 100.0)))))
+                energy = float(getattr(brain, "energy", getattr(agent, "energy", 1.0)))
+                hunger = float(getattr(brain, "hunger", getattr(agent, "hunger", 0.0)))
+                agent.energy = max(0.0, min(1.0, energy / 100.0 if energy > 1.5 else energy))
+                agent.hunger = max(0.0, min(1.0, hunger / 100.0 if hunger > 1.5 else hunger))
+                agent.fear = max(0.0, min(1.0, float(getattr(brain, "fear_level", getattr(agent, "fear", 0.0)))))
+                agent.age_ticks = int(getattr(brain, "age_ticks", getattr(agent, "age_ticks", 0)) or 0)
+                agent.alive = bool(getattr(brain, "alive", True)) and agent.health > 0.0
+            except Exception:
+                pass
+            try:
+                sync_memory = getattr(agent, "_sync_memory_from_brain", None)
+                if callable(sync_memory):
+                    sync_memory()
+            except Exception:
+                pass
+            try:
+                setattr(agent, "_lab_subject_source_path", str(candidate.path))
+            except Exception:
+                pass
+
         def _add_showcase_safe_havens(self, world) -> int:
             return 0
 
@@ -1301,6 +1399,7 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             keep_agent = room._get_agent(world, keep_id)
             if keep_agent is None:
                 return
+            self._apply_selected_lab_subject_brain(keep_agent)
 
             lineup = list(getattr(self.trainer, "agent_lineup", []) or [])
             selected_spec = None
@@ -1600,12 +1699,19 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             lay.setContentsMargins(10, 10, 10, 10)
             lay.setSpacing(8)
 
-            title = QtWidgets.QLabel("Пиши указания агенту прямо через Ollama.")
+            if getattr(self, "_white_room", False):
+                title_text = "Разговаривай с агентом прямо через Ollama."
+                hint_text = "Пример: «расскажи, что ты помнишь о выживании и как чувствуешь себя в белой комнате»"
+            else:
+                title_text = "Пиши указания агенту прямо через Ollama."
+                hint_text = "Пример: «посади агента в левое кресло и заставь запомнить маршрут к столику»"
+
+            title = QtWidgets.QLabel(title_text)
             title.setStyleSheet("QLabel { color:#d8ddf7; font-weight:600; }")
             title.setWordWrap(True)
             lay.addWidget(title)
 
-            hint = QtWidgets.QLabel("Пример: «посади агента в левое кресло и заставь запомнить маршрут к столику»")
+            hint = QtWidgets.QLabel(hint_text)
             hint.setStyleSheet("QLabel { color:#98a3c7; font-size:11px; }")
             hint.setWordWrap(True)
             lay.addWidget(hint)
@@ -1871,7 +1977,11 @@ def _build_room_only_window(runtime_options: Optional[Dict[str, Any]] = None):
             super()._on_trainer_epoch_changed()
             self._ollama_last_seen_log_seq = 0
             self._ollama_online_announced = False
-            self._enable_room_combat_lessons(announce=False)
+            self._configure_room_only_manager()
+            if getattr(self, "_conversation_only", False):
+                self._stop_room_combat_lesson(announce=False)
+            else:
+                self._enable_room_combat_lessons(announce=False)
             self._configure_ollama_brain(announce=False)
             self._refresh_room_combat_ui()
             if self._ollama_enabled:

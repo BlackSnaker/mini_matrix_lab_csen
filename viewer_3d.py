@@ -472,6 +472,7 @@ class World3DView(QOpenGLWidget):
         self._mv = None
         self._proj = None
         self._viewport = None
+        self._matrix_read_counter = 0
 
         # мышь / ввод
         self._last_mouse_pos: Optional[QPointF] = None
@@ -534,9 +535,13 @@ class World3DView(QOpenGLWidget):
         self.engine.render_opengl()
 
         # сохраняем матрицы/viewport для raycast по полу
-        self._mv = glGetDoublev(GL_MODELVIEW_MATRIX)
-        self._proj = glGetDoublev(GL_PROJECTION_MATRIX)
-        self._viewport = glGetIntegerv(GL_VIEWPORT)
+        quality = str(getattr(self.engine, "_render_quality", "high"))
+        read_period = 4 if quality == "turbo" else (2 if quality == "performance" else 1)
+        self._matrix_read_counter = (self._matrix_read_counter + 1) % max(1, read_period)
+        if self._mv is None or self._matrix_read_counter == 0:
+            self._mv = glGetDoublev(GL_MODELVIEW_MATRIX)
+            self._proj = glGetDoublev(GL_PROJECTION_MATRIX)
+            self._viewport = glGetIntegerv(GL_VIEWPORT)
 
         # --- HUD поверх OpenGL
         painter = QtGui.QPainter(self)

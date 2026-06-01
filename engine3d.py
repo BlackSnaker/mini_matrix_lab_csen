@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Any
 import math
+import os
 import random
 
 # OpenGL immediate mode
@@ -24,7 +25,7 @@ from OpenGL.GL import (
     GL_DEPTH_TEST, GL_BLEND,
     GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
     GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT,
-    GL_LINES, GL_TRIANGLE_FAN, GL_QUADS,
+    GL_LINES, GL_TRIANGLES, GL_TRIANGLE_FAN, GL_QUADS,
     GL_LEQUAL,
 )
 from OpenGL.GLU import gluPerspective, gluLookAt, gluProject
@@ -86,6 +87,12 @@ MAX_VFX_DISTANCE = 95.0             # дальность VFX и damage numbers
 SOCIAL_AVOIDANCE_CELL = 2.25        # размер ячейки spatial hash для разведения
 FOV_DEG             = 80.0      # базовая ширина FOV-конуса
 FOV_RANGE           = 7.0       # базовая дальность FOV-конуса
+
+# Adaptive quality: immediate-mode OpenGL is CPU-bound, so low-FPS modes cut
+# Python draw calls aggressively instead of just hiding distant HUD text.
+QUALITY_TURBO_FPS = 20.0
+QUALITY_PERFORMANCE_FPS = 30.0
+QUALITY_BALANCED_FPS = 45.0
 
 # Sun / daylight
 SUN_ENABLED = True
@@ -426,6 +433,7 @@ def _draw_floor_grid(
     world_w: float,
     world_h: float,
     cam_pos: Optional[Tuple[float, float, float]] = None,
+    quality: str = "high",
 ):
     """
     Слой земли + сетка.
@@ -449,8 +457,24 @@ def _draw_floor_grid(
     glVertex3f(0.0,      0.0,      world_h)
     glEnd()
 
+    if quality == "turbo":
+        border_col = _fake_lighting_color((0.58, 0.62, 0.62), 0.0, 1.0, 0.0)
+        glColor3f(*border_col)
+        glLineWidth(1.6)
+        glBegin(GL_LINES)
+        glVertex3f(0.0,      0.003, 0.0);      glVertex3f(world_w,  0.003, 0.0)
+        glVertex3f(world_w,  0.003, 0.0);      glVertex3f(world_w,  0.003, world_h)
+        glVertex3f(world_w,  0.003, world_h);  glVertex3f(0.0,      0.003, world_h)
+        glVertex3f(0.0,      0.003, world_h);  glVertex3f(0.0,      0.003, 0.0)
+        glEnd()
+        return
+
     # Продольные "полосы" цвета по Z, чтобы плоскость не была плоской по тону.
-    if detail_pressure >= 140.0:
+    if quality == "performance":
+        bands = 5
+    elif quality == "balanced":
+        bands = 9 if detail_pressure >= 80.0 else 12
+    elif detail_pressure >= 140.0:
         bands = 8
     elif detail_pressure >= 80.0:
         bands = 12
@@ -474,7 +498,8 @@ def _draw_floor_grid(
         glVertex3f(0.0,      0.0002, z1)
         glEnd()
 
-    _draw_ground_patches(world_w, world_h, detail_pressure)
+    if quality not in ("performance", "turbo"):
+        _draw_ground_patches(world_w, world_h, detail_pressure)
 
     # Минорная сетка.
     base_step = max(5.0, min(world_w, world_h) / 22.0)
@@ -484,7 +509,7 @@ def _draw_floor_grid(
         minor_step = base_step * 2.0
     else:
         minor_step = base_step
-    draw_minor = detail_pressure < 170.0
+    draw_minor = detail_pressure < 170.0 and quality != "performance"
     if draw_minor:
         grid_minor = _fake_lighting_color((0.23, 0.25, 0.24), 0.0, 1.0, 0.0)
         glColor3f(*grid_minor)
@@ -665,6 +690,296 @@ def _vary_rgb(
     g = clamp(base[1] + (_hash01(seed_a, seed_b, 2.0) - 0.5) * 2.0 * amount, 0.0, 1.0)
     b = clamp(base[2] + (_hash01(seed_a, seed_b, 3.0) - 0.5) * 2.0 * amount, 0.0, 1.0)
     return (r, g, b)
+
+
+@dataclass(frozen=True)
+class ObjTriangle:
+    verts: Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
+    color: Tuple[float, float, float]
+    normal: Tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class ObjCharacterMesh:
+    triangles: Tuple[ObjTriangle, ...]
+    bounds: Tuple[float, float, float, float, float, float]
+
+
+_KENNEY_CHARACTER_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "assets",
+    "models",
+    "kenney_blocky_characters",
+    "Models",
+    "OBJ format",
+)
+_KENNEY_AGENT_VARIANTS = ("a", "b", "c", "d", "e", "f")
+_AGENT_MESH_CACHE: Dict[str, Optional[ObjCharacterMesh]] = {}
+_AGENT_MESH_DISABLED = False
+
+
+def _stable_variant_key(agent_id: str) -> str:
+    text = str(agent_id or "")
+    if not text:
+        return _KENNEY_AGENT_VARIANTS[0]
+    seed = 0
+    for idx, ch in enumerate(text):
+        seed += (idx + 1) * ord(ch)
+    return _KENNEY_AGENT_VARIANTS[seed % len(_KENNEY_AGENT_VARIANTS)]
+
+
+def _parse_mtl(path: str) -> Dict[str, Dict[str, Any]]:
+    materials: Dict[str, Dict[str, Any]] = {}
+    current: Optional[str] = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                key = parts[0]
+                if key == "newmtl" and len(parts) >= 2:
+                    current = parts[1]
+                    materials[current] = {}
+                elif current and key == "Kd" and len(parts) >= 4:
+                    materials[current]["kd"] = (
+                        clamp(float(parts[1]), 0.0, 1.0),
+                        clamp(float(parts[2]), 0.0, 1.0),
+                        clamp(float(parts[3]), 0.0, 1.0),
+                    )
+                elif current and key == "map_Kd" and len(parts) >= 2:
+                    materials[current]["map_kd"] = " ".join(parts[1:])
+    except Exception:
+        return materials
+    return materials
+
+
+def _load_png_sampler(path: str):
+    try:
+        from PySide6 import QtGui
+        image = QtGui.QImage(path)
+        if image.isNull():
+            return None
+        image = image.convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+    except Exception:
+        return None
+
+    w = max(1, int(image.width()))
+    h = max(1, int(image.height()))
+
+    def _sample(uvs: List[Tuple[float, float]]) -> Tuple[float, float, float]:
+        if not uvs:
+            return (1.0, 1.0, 1.0)
+        r = g = b = 0.0
+        count = 0
+        for u, v in uvs:
+            uu = float(u) % 1.0
+            vv = float(v) % 1.0
+            x = int(clamp(uu, 0.0, 0.99999) * (w - 1))
+            y = int(clamp(1.0 - vv, 0.0, 0.99999) * (h - 1))
+            col = image.pixelColor(x, y)
+            r += col.redF()
+            g += col.greenF()
+            b += col.blueF()
+            count += 1
+        inv = 1.0 / max(1, count)
+        return (clamp(r * inv, 0.0, 1.0), clamp(g * inv, 0.0, 1.0), clamp(b * inv, 0.0, 1.0))
+
+    return _sample
+
+
+def _resolve_obj_index(raw_idx: str, size: int) -> Optional[int]:
+    try:
+        idx = int(raw_idx)
+    except Exception:
+        return None
+    if idx > 0:
+        idx -= 1
+    elif idx < 0:
+        idx = size + idx
+    else:
+        return None
+    if idx < 0 or idx >= size:
+        return None
+    return idx
+
+
+def _load_obj_character_mesh(variant: str) -> Optional[ObjCharacterMesh]:
+    variant = str(variant or "").strip().lower()
+    if variant in _AGENT_MESH_CACHE:
+        return _AGENT_MESH_CACHE[variant]
+    obj_path = os.path.join(_KENNEY_CHARACTER_DIR, f"character-{variant}.obj")
+    if not os.path.exists(obj_path):
+        _AGENT_MESH_CACHE[variant] = None
+        return None
+
+    verts: List[Tuple[float, float, float]] = []
+    uvs: List[Tuple[float, float]] = []
+    triangles: List[ObjTriangle] = []
+    materials: Dict[str, Dict[str, Any]] = {}
+    samplers: Dict[str, Any] = {}
+    current_mtl: Optional[str] = None
+
+    def _material_color(face_uvs: List[Tuple[float, float]]) -> Tuple[float, float, float]:
+        mat = materials.get(str(current_mtl or ""), {})
+        sampler_key = str(mat.get("map_kd") or "")
+        if sampler_key:
+            sampler = samplers.get(sampler_key)
+            if sampler is None:
+                texture_path = os.path.join(os.path.dirname(obj_path), sampler_key)
+                sampler = _load_png_sampler(texture_path)
+                samplers[sampler_key] = sampler
+            if sampler is not None:
+                return sampler(face_uvs)
+        return tuple(mat.get("kd", (0.92, 0.92, 0.92)))  # type: ignore[return-value]
+
+    try:
+        with open(obj_path, "r", encoding="utf-8", errors="ignore") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if not parts:
+                    continue
+                key = parts[0]
+                if key == "mtllib" and len(parts) >= 2:
+                    mtl_path = os.path.join(os.path.dirname(obj_path), " ".join(parts[1:]))
+                    materials.update(_parse_mtl(mtl_path))
+                elif key == "v" and len(parts) >= 4:
+                    verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                elif key == "vt" and len(parts) >= 3:
+                    uvs.append((float(parts[1]), float(parts[2])))
+                elif key == "usemtl" and len(parts) >= 2:
+                    current_mtl = parts[1]
+                elif key == "f" and len(parts) >= 4:
+                    face: List[Tuple[int, Optional[int]]] = []
+                    for token in parts[1:]:
+                        refs = token.split("/")
+                        vi = _resolve_obj_index(refs[0], len(verts)) if refs and refs[0] else None
+                        if vi is None:
+                            continue
+                        ti = None
+                        if len(refs) >= 2 and refs[1]:
+                            ti = _resolve_obj_index(refs[1], len(uvs))
+                        face.append((vi, ti))
+                    if len(face) < 3:
+                        continue
+                    for i in range(1, len(face) - 1):
+                        tri_refs = (face[0], face[i], face[i + 1])
+                        tri_verts = (verts[tri_refs[0][0]], verts[tri_refs[1][0]], verts[tri_refs[2][0]])
+                        tri_uvs = [uvs[ti] for _, ti in tri_refs if ti is not None and 0 <= ti < len(uvs)]
+                        p0, p1, p2 = tri_verts
+                        ux = p1[0] - p0[0]; uy = p1[1] - p0[1]; uz = p1[2] - p0[2]
+                        vx = p2[0] - p0[0]; vy = p2[1] - p0[1]; vz = p2[2] - p0[2]
+                        nx = uy * vz - uz * vy
+                        ny = uz * vx - ux * vz
+                        nz = ux * vy - uy * vx
+                        nlen = math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9
+                        triangles.append(
+                            ObjTriangle(
+                                verts=tri_verts,
+                                color=_material_color(tri_uvs),
+                                normal=(nx / nlen, ny / nlen, nz / nlen),
+                            )
+                        )
+    except Exception:
+        _AGENT_MESH_CACHE[variant] = None
+        return None
+
+    if not verts or not triangles:
+        _AGENT_MESH_CACHE[variant] = None
+        return None
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+    zs = [v[2] for v in verts]
+    mesh = ObjCharacterMesh(
+        triangles=tuple(triangles),
+        bounds=(min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)),
+    )
+    _AGENT_MESH_CACHE[variant] = mesh
+    return mesh
+
+
+def _draw_agent_selection_ring(agent: AgentEntity, t: float, radius: float = 1.10) -> None:
+    if not agent.selected:
+        return
+    px = float(agent.transform.pos.x)
+    pz = float(agent.transform.pos.z)
+    if SELECTED_PULSE:
+        pulse = math.sin(t * 4.0) * 0.5 + 0.5
+        r = radius + pulse * 0.25
+        a = 0.55 + 0.35 * pulse
+    else:
+        r = radius
+        a = 0.9
+    _draw_ring(px, pz, radius=r, y=0.05, rgb=(0.2, 0.8, 1.0), width=2.0, alpha=a)
+
+
+def _draw_agent_asset_model(agent: AgentEntity, t: float) -> bool:
+    global _AGENT_MESH_DISABLED
+    if _AGENT_MESH_DISABLED:
+        return False
+    variant = _stable_variant_key(agent.agent_id)
+    mesh = _load_obj_character_mesh(variant)
+    if mesh is None:
+        _AGENT_MESH_DISABLED = True
+        return False
+
+    yaw = float(agent.transform.yaw) - math.pi * 0.5
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+    px = float(agent.transform.pos.x)
+    pz = float(agent.transform.pos.z)
+    fear = clamp(float(agent.anim.fear), 0.0, 1.0)
+    hp_ratio = clamp(float(agent.anim.health), 0.0, 100.0) / 100.0
+    alive = bool(agent.anim.alive)
+    bob = (math.sin(float(agent.anim.walk_phase) * 2.0) * 0.025) if alive else -0.04
+    sx = 0.58
+    sy = 0.78 if alive else 0.56
+    sz = 0.70
+
+    def _xform(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        lx = float(v[0]) * sx
+        ly = float(v[1]) * sy + bob
+        lz = float(v[2]) * sz
+        wx = px + lx * cos_y - lz * sin_y
+        wz = pz + lx * sin_y + lz * cos_y
+        return (wx, ly, wz)
+
+    def _state_color(base: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        col = base
+        if not alive:
+            col = _mix_rgb(col, (0.52, 0.54, 0.58), 0.72)
+        else:
+            if fear > 0.25:
+                col = _mix_rgb(col, (1.0, 0.36, 0.22), clamp((fear - 0.25) * 0.22, 0.0, 0.18))
+            if hp_ratio < 0.55:
+                col = _mix_rgb(col, (0.38, 0.08, 0.08), clamp((0.55 - hp_ratio) * 0.24, 0.0, 0.18))
+        return col
+
+    glBegin(GL_TRIANGLES)
+    for tri in mesh.triangles:
+        p0 = _xform(tri.verts[0])
+        p1 = _xform(tri.verts[1])
+        p2 = _xform(tri.verts[2])
+        nx = tri.normal[0] * cos_y - tri.normal[2] * sin_y
+        ny = tri.normal[1]
+        nz = tri.normal[0] * sin_y + tri.normal[2] * cos_y
+        base = _state_color(tri.color)
+        lit = _fake_lighting_color(base, normal_x=nx, normal_y=ny, normal_z=nz)
+        glColor3f(*lit)
+        glVertex3f(*p0)
+        glVertex3f(*p1)
+        glVertex3f(*p2)
+    glEnd()
+
+    _draw_agent_special_markers(agent, t)
+    _draw_agent_selection_ring(agent, t, radius=0.98)
+    return True
 
 
 def _yaw_world_offset(cx: float, cz: float, yaw_rad: float, lx: float, lz: float) -> Tuple[float, float]:
@@ -1581,7 +1896,19 @@ TRAINING_ROOM_ZONE_OBJECT_ID = "training_room_zone"
 def _is_training_room_zone(zone: ZoneObject) -> bool:
     obj_id = str(getattr(zone, "obj_id", "") or "")
     name = str(getattr(zone, "name", "") or "")
-    return obj_id == TRAINING_ROOM_ZONE_OBJECT_ID or "training_room" in obj_id or "Учебная_комната" in name
+    return (
+        obj_id == TRAINING_ROOM_ZONE_OBJECT_ID
+        or "training_room" in obj_id
+        or "white_room" in obj_id
+        or "Учебная_комната" in name
+        or "Белая_комната" in name
+    )
+
+
+def _is_white_training_room_zone(zone: ZoneObject) -> bool:
+    obj_id = str(getattr(zone, "obj_id", "") or "")
+    name = str(getattr(zone, "name", "") or "")
+    return "white_room" in obj_id or "Белая_комната" in name or "blank_room" in obj_id
 
 
 def _draw_flat_rect(
@@ -1744,6 +2071,28 @@ def _draw_matrix_construct_room(zone: ZoneObject, global_time: float) -> None:
     _draw_ring(cx, cz, radius=room_half * 0.76, y=0.032, rgb=(0.86, 0.86, 0.80), width=1.0, alpha=0.16)
 
 
+def _draw_white_training_room(zone: ZoneObject, global_time: float) -> None:
+    cx = float(zone.x)
+    cz = float(zone.z)
+    room_half = max(7.0, float(zone.radius) * 1.18)
+    room_h = max(3.0, room_half * 0.34)
+    wall_t = 0.18
+
+    floor_col = (0.96, 0.96, 0.94)
+    wall_col = (1.0, 1.0, 1.0)
+    edge_col = (0.86, 0.86, 0.84)
+
+    _draw_flat_rect(cx, cz, room_half, room_half, y=0.014, yaw_rad=0.0, color=floor_col)
+    _draw_oriented_box(cx, 0.08, cz - room_half, room_half, 0.08, wall_t, 0.0, edge_col)
+    _draw_oriented_box(cx, 0.08, cz + room_half, room_half, 0.08, wall_t, 0.0, edge_col)
+    _draw_oriented_box(cx - room_half, 0.08, cz, room_half, 0.08, wall_t, math.pi * 0.5, edge_col)
+    _draw_oriented_box(cx + room_half, 0.08, cz, room_half, 0.08, wall_t, math.pi * 0.5, edge_col)
+    _draw_oriented_box(cx, room_h * 0.52, cz - room_half, room_half, room_h * 0.52, wall_t, 0.0, wall_col)
+    _draw_oriented_box(cx, room_h * 0.52, cz + room_half, room_half, room_h * 0.52, wall_t, 0.0, wall_col)
+    _draw_oriented_box(cx - room_half, room_h * 0.52, cz, room_half, room_h * 0.52, wall_t, math.pi * 0.5, wall_col)
+    _draw_oriented_box(cx + room_half, room_h * 0.52, cz, room_half, room_h * 0.52, wall_t, math.pi * 0.5, wall_col)
+
+
 def _draw_static_mesh(inst: StaticMeshInstance, global_time: float):
     if inst.kind == "house":
         _draw_house(inst)
@@ -1830,6 +2179,9 @@ def _draw_agent_special_markers(agent: AgentEntity, t: float) -> None:
         )
 
 def draw_agent_humanoid(agent: AgentEntity, t: float):
+    if _draw_agent_asset_model(agent, t):
+        return
+
     yaw = float(agent.transform.yaw)
     fear = clamp(float(agent.anim.fear), 0.0, 1.0)
     hp = clamp(float(agent.anim.health), 0.0, 100.0)
@@ -2245,6 +2597,7 @@ class MiniMatrixEngine:
         self.hidden_agent_ids: set[str] = set()
         self._frame_dt_smooth: float = 1.0 / 60.0
         self._render_quality: str = "high"
+        self._avoidance_accum: float = 0.0
 
         # HUD / текст
         self._hud_text_enabled = HUD_SHOW_TEXT and _HAS_GLUT
@@ -2273,25 +2626,72 @@ class MiniMatrixEngine:
     def _update_quality_profile(self, dt: float) -> None:
         alpha = 0.12
         self._frame_dt_smooth = self._frame_dt_smooth * (1.0 - alpha) + float(dt) * alpha
-        if self._frame_dt_smooth >= (1.0 / 26.0):
+        if self._frame_dt_smooth >= (1.0 / QUALITY_TURBO_FPS):
+            self._render_quality = "turbo"
+        elif self._frame_dt_smooth >= (1.0 / QUALITY_PERFORMANCE_FPS):
             self._render_quality = "performance"
-        elif self._frame_dt_smooth >= (1.0 / 42.0):
+        elif self._frame_dt_smooth >= (1.0 / QUALITY_BALANCED_FPS):
             self._render_quality = "balanced"
         else:
             self._render_quality = "high"
 
     def _lod_distance_scale(self) -> float:
+        if self._render_quality == "turbo":
+            return 0.38
         if self._render_quality == "performance":
-            return 0.70
+            return 0.58
         if self._render_quality == "balanced":
-            return 0.84
+            return 0.80
         return 1.0
 
     def _show_secondary_gizmos(self) -> bool:
-        return self._render_quality != "performance"
+        return self._render_quality in ("high", "balanced")
 
     def _show_full_hud_for(self, selected: bool) -> bool:
-        return bool(selected) or self._render_quality != "performance"
+        return bool(selected) or self._render_quality in ("high", "balanced")
+
+    def _quality_caps(self) -> Dict[str, Optional[int]]:
+        if self._render_quality == "turbo":
+            return {
+                "static": 24,
+                "zones": 12,
+                "agents": 36,
+                "animals": 36,
+                "detailed_agents": 1,
+                "detailed_animals": 0,
+            }
+        if self._render_quality == "performance":
+            return {
+                "static": 70,
+                "zones": 24,
+                "agents": 80,
+                "animals": 80,
+                "detailed_agents": 10,
+                "detailed_animals": 8,
+            }
+        if self._render_quality == "balanced":
+            return {
+                "static": 160,
+                "zones": 40,
+                "agents": 140,
+                "animals": 140,
+                "detailed_agents": 28,
+                "detailed_animals": 24,
+            }
+        return {
+            "static": None,
+            "zones": None,
+            "agents": None,
+            "animals": None,
+            "detailed_agents": None,
+            "detailed_animals": None,
+        }
+
+    def _truncate_by_distance(self, rows: List[Tuple[float, Any]], cap: Optional[int]) -> List[Any]:
+        if cap is None or len(rows) <= int(cap):
+            return [row[1] for row in rows]
+        rows.sort(key=lambda row: row[0])
+        return [row[1] for row in rows[:max(0, int(cap))]]
 
     def _within_render_lod(self, x: float, z: float, max_distance: float, force: bool = False) -> bool:
         if force or max_distance <= 0.0:
@@ -2313,19 +2713,23 @@ class MiniMatrixEngine:
 
     def _collect_render_lists(self):
         dist_scale = self._lod_distance_scale()
-        visible_static: List[StaticMeshInstance] = []
+        caps = self._quality_caps()
+        static_rows: List[Tuple[float, StaticMeshInstance]] = []
         for inst in self.static_meshes:
             lod_distance = MAX_STATIC_DISTANCE * dist_scale + self._static_mesh_radius(inst)
             if self._within_render_lod(inst.pos.x, inst.pos.z, lod_distance):
-                visible_static.append(inst)
+                static_rows.append((self._dist2_xz(inst.pos.x, inst.pos.z), inst))
+        visible_static = self._truncate_by_distance(static_rows, caps.get("static"))
 
-        visible_zones: List[ZoneObject] = []
+        zone_rows: List[Tuple[float, ZoneObject]] = []
         for zone in self.world.zones:
             if self._within_render_lod(zone.x, zone.z, MAX_ZONE_DISTANCE * dist_scale + zone.radius):
-                visible_zones.append(zone)
+                priority = -1.0 if _is_training_room_zone(zone) else self._dist2_xz(zone.x, zone.z)
+                zone_rows.append((priority, zone))
+        visible_zones = self._truncate_by_distance(zone_rows, caps.get("zones"))
 
-        visible_agents: List[AgentEntity] = []
-        detailed_agent_ids: set[str] = set()
+        agent_rows: List[Tuple[float, AgentEntity]] = []
+        detail_agent_rows: List[Tuple[float, AgentEntity]] = []
         for agent in self.agents.values():
             if agent.agent_id in self.hidden_agent_ids:
                 continue
@@ -2334,21 +2738,39 @@ class MiniMatrixEngine:
             pz = agent.transform.pos.z
             if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE * dist_scale, force=force):
                 continue
-            visible_agents.append(agent)
+            dist2 = self._dist2_xz(px, pz)
+            row_key = -1.0 if force else dist2
+            agent_rows.append((row_key, agent))
             if self._within_render_lod(px, pz, MAX_AGENT_DETAIL_DISTANCE * dist_scale, force=force):
-                detailed_agent_ids.add(agent.agent_id)
+                detail_agent_rows.append((row_key, agent))
+        visible_agents = self._truncate_by_distance(agent_rows, caps.get("agents"))
+        visible_agent_ids = {agent.agent_id for agent in visible_agents}
+        detailed_agent_ids: set[str] = {
+            agent.agent_id
+            for agent in self._truncate_by_distance(detail_agent_rows, caps.get("detailed_agents"))
+            if agent.agent_id in visible_agent_ids
+        }
 
-        visible_animals: List[AnimalEntity] = []
-        detailed_animal_ids: set[str] = set()
+        animal_rows: List[Tuple[float, AnimalEntity]] = []
+        detail_animal_rows: List[Tuple[float, AnimalEntity]] = []
         for animal in self.animals.values():
             force = animal.selected
             px = animal.transform.pos.x
             pz = animal.transform.pos.z
             if not self._within_render_lod(px, pz, MAX_ENTITY_RENDER_DISTANCE * dist_scale, force=force):
                 continue
-            visible_animals.append(animal)
+            dist2 = self._dist2_xz(px, pz)
+            row_key = -1.0 if force else dist2
+            animal_rows.append((row_key, animal))
             if self._within_render_lod(px, pz, MAX_ANIMAL_DETAIL_DISTANCE * dist_scale, force=force):
-                detailed_animal_ids.add(animal.animal_id)
+                detail_animal_rows.append((row_key, animal))
+        visible_animals = self._truncate_by_distance(animal_rows, caps.get("animals"))
+        visible_animal_ids = {animal.animal_id for animal in visible_animals}
+        detailed_animal_ids: set[str] = {
+            animal.animal_id
+            for animal in self._truncate_by_distance(detail_animal_rows, caps.get("detailed_animals"))
+            if animal.animal_id in visible_animal_ids
+        }
 
         return visible_static, visible_zones, visible_agents, detailed_agent_ids, visible_animals, detailed_animal_ids
 
@@ -2904,7 +3326,7 @@ class MiniMatrixEngine:
 
     def _draw_text3d(self, s: str, x: float, y: float, z: float, big: bool = False, alpha: float = 1.0,
                      rgb: Tuple[float, float, float] = (1.0, 1.0, 1.0)):
-        if not self._hud_text_enabled or not s:
+        if not self._hud_text_enabled or not s or self._render_quality == "turbo":
             return
         try:
             glColor4f(rgb[0], rgb[1], rgb[2], alpha)
@@ -3038,9 +3460,18 @@ class MiniMatrixEngine:
         self._update_sun_state(dt)
 
         self._smooth_positions_towards_targets(dt)
-        self._apply_social_avoidance_agents()
-        self._apply_social_avoidance_animals()
-        self._apply_social_avoidance_cross()
+        self._avoidance_accum += dt
+        avoidance_interval = 0.0
+        if self._render_quality == "performance":
+            avoidance_interval = 0.06
+        elif self._render_quality == "turbo":
+            avoidance_interval = 0.14
+        if avoidance_interval <= 0.0 or self._avoidance_accum >= avoidance_interval:
+            self._avoidance_accum = 0.0
+            self._apply_social_avoidance_agents()
+            if self._render_quality != "turbo":
+                self._apply_social_avoidance_animals()
+                self._apply_social_avoidance_cross()
         self._orient_and_animate_agents(dt)
         self._orient_and_animate_animals(dt)
         self._update_vfx(dt)
@@ -3088,6 +3519,8 @@ class MiniMatrixEngine:
         )
 
     def _draw_vfx(self):
+        if self._render_quality == "turbo":
+            return
         for ring in self.vfx:
             if not self._within_render_lod(ring.x, ring.z, MAX_VFX_DISTANCE):
                 continue
@@ -3097,7 +3530,7 @@ class MiniMatrixEngine:
             _draw_ring(ring.x, ring.z, radius=r, y=ring.y, rgb=col, width=2.0, alpha=a)
 
     def _draw_damage_numbers(self):
-        if not (self._hud_text_enabled and SHOW_DAMAGE_NUMBERS):
+        if not (self._hud_text_enabled and SHOW_DAMAGE_NUMBERS) or self._render_quality in ("performance", "turbo"):
             return
         for dn in self.numbers:
             if not self._within_render_lod(dn.x, dn.z, MAX_VFX_DISTANCE):
@@ -3273,10 +3706,11 @@ class MiniMatrixEngine:
           - звери + HUD
           - VFX (вспышки) + числа урона/хила
         """
-        self._draw_sun()
+        if self._render_quality not in ("performance", "turbo"):
+            self._draw_sun()
 
         # пол/сетка
-        _draw_floor_grid(self.world.width, self.world.height, cam_pos=self._cam_pos)
+        _draw_floor_grid(self.world.width, self.world.height, cam_pos=self._cam_pos, quality=self._render_quality)
 
         (
             visible_static,
@@ -3296,12 +3730,19 @@ class MiniMatrixEngine:
         # зоны с сервера
         for zone in visible_zones:
             if _is_training_room_zone(zone):
-                _draw_matrix_construct_room(zone, self._time_accum)
+                if _is_white_training_room_zone(zone):
+                    _draw_white_training_room(zone, self._time_accum)
+                else:
+                    _draw_matrix_construct_room(zone, self._time_accum)
                 continue
             _draw_disc_zone(zone.x, zone.z, zone.radius, zone.kind, y=0.02)
 
         # цели агентов (кольца)
         for agent in visible_agents:
+            if self._render_quality == "turbo" and not agent.selected:
+                continue
+            if self._render_quality == "performance" and not agent.selected and agent.agent_id not in detailed_agent_ids:
+                continue
             if not self._within_render_lod(agent.goal.x, agent.goal.z, goal_ring_distance, force=agent.selected):
                 continue
             _draw_ring(
@@ -3325,11 +3766,15 @@ class MiniMatrixEngine:
                 draw_agent_humanoid(agent, self._time_accum)
             else:
                 draw_agent_impostor(agent, self._time_accum)
-            if agent.agent_id in detailed_agent_ids and self._within_render_lod(
+            if (
+                self._render_quality in ("high", "balanced")
+                and agent.agent_id in detailed_agent_ids
+                and self._within_render_lod(
                 agent.transform.pos.x,
                 agent.transform.pos.z,
                 MAX_DIRECTION_ARROW_DISTANCE,
                 force=agent.selected,
+                )
             ):
                 draw_agent_direction_arrow(agent)
             if self._show_full_hud_for(agent.selected):
@@ -3341,11 +3786,15 @@ class MiniMatrixEngine:
                 draw_animal_quadruped(animal, self._time_accum)
             else:
                 draw_animal_impostor(animal, self._time_accum)
-            if animal.animal_id in detailed_animal_ids and self._within_render_lod(
+            if (
+                self._render_quality in ("high", "balanced")
+                and animal.animal_id in detailed_animal_ids
+                and self._within_render_lod(
                 animal.transform.pos.x,
                 animal.transform.pos.z,
                 MAX_DIRECTION_ARROW_DISTANCE,
                 force=animal.selected,
+                )
             ):
                 draw_animal_direction_arrow(animal)
             if self._show_full_hud_for(animal.selected):
